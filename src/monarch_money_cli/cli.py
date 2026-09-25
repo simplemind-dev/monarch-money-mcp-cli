@@ -214,16 +214,17 @@ def cmd_transactions(args: argparse.Namespace) -> int:
         return out
 
     data = asyncio.run(fetch())
-    rows = [{**t, "amount": _money(t["amount"]), "pending": "yes" if t["pending"] else ""}
-            for t in data["transactions"]]
+    rows = [{**t, "amount": _money(t["amount"]), "pending": "yes" if t["pending"] else "",
+             "tags": ", ".join(t["tags"])} for t in data["transactions"]]
     human = _table(rows, [("date", "DATE"), ("merchant", "MERCHANT"), ("category", "CATEGORY"),
-                          ("account", "ACCOUNT"), ("amount", "AMOUNT"), ("pending", "PENDING")], {"amount"})
+                          ("account", "ACCOUNT"), ("entity", "ENTITY"), ("tags", "TAGS"),
+                          ("amount", "AMOUNT"), ("pending", "PENDING")], {"amount"})
     human = _scope_line(data.get("entity_scope")) + human
     human += f"\n\n{data['returned']} of {data['total']} transactions, {start} to {end}"
     if data["has_more"]:
         human += " (use --limit or --offset for more)"
-    _emit(args, data, human, data["transactions"],
-          ["id", "date", "merchant", "category", "account", "amount", "pending"])
+    _emit(args, data, human, [{**t, "tags": ", ".join(t["tags"])} for t in data["transactions"]],
+          ["id", "date", "merchant", "category", "account", "entity", "tags", "amount", "pending"])
     return EXIT_OK
 
 

@@ -148,6 +148,8 @@ query GetTransactionsList($offset: Int, $limit: Int, $filters: TransactionFilter
       category { name }
       merchant { name }
       account { displayName }
+      businessEntity { name }
+      tags { name }
     }
   }
 }"""

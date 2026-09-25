@@ -17,9 +17,11 @@ ACCOUNTS = {"accounts": [
 ]}
 TXNS = {"allTransactions": {"totalCount": 3, "results": [
     {"id": "t1", "amount": -42.1, "pending": False, "date": "2026-09-02", "notes": "secret note",
-     "category": {"name": "Groceries"}, "merchant": {"name": "King Soopers"}, "account": {"displayName": "Checking"}},
+     "category": {"name": "Groceries"}, "merchant": {"name": "King Soopers"}, "account": {"displayName": "Checking"},
+     "businessEntity": {"name": "Acme LLC"}, "tags": [{"name": "business"}, {"name": "supplies"}]},
     {"id": "t2", "amount": 2500, "pending": True, "date": "2026-09-01", "notes": None,
-     "category": {"name": "Paycheck"}, "merchant": {"name": "Employer"}, "account": {"displayName": "Checking"}},
+     "category": {"name": "Paycheck"}, "merchant": {"name": "Employer"}, "account": {"displayName": "Checking"},
+     "businessEntity": None, "tags": []},
 ]}}
 CASHFLOW = {
     "byCategory": [

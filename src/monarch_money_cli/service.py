@@ -202,6 +202,8 @@ async def transactions(c: MonarchClient, start: str, end: str, search: str = "",
         "category": (t.get("category") or {}).get("name"),
         "account": (t.get("account") or {}).get("displayName"),
         "pending": t.get("pending"),
+        "entity": (t.get("businessEntity") or {}).get("name") or "",  # "" = household
+        "tags": [g.get("name") for g in t.get("tags") or [] if g.get("name")],
     } for t in block.get("results") or []]
     return _scoped({"total": total, "offset": offset, "returned": len(txns),
                     "has_more": offset + len(txns) < total, "transactions": txns}, scope)

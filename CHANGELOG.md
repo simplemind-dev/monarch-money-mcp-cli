@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Transactions include each one's business entity and tags.
+
 ## 0.1.0 (2026-09-25)
 
 - `monarch auth`: login, status, logout via macOS Keychain.

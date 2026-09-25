@@ -63,6 +63,15 @@ class Commands(unittest.TestCase):
             self.assertIn("King Soopers", out)
             self.assertNotIn("secret note", out)
 
+    def test_transactions_csv_has_entity_and_tags(self, _):
+        import csv, io
+        with MockMonarch():
+            code, out, _ = run("tx", "2026-09-01", "2026-09-30", "--output", "csv")
+        self.assertEqual(code, 0)
+        rows = list(csv.DictReader(io.StringIO(out)))
+        self.assertEqual((rows[0]["entity"], rows[0]["tags"]), ("Acme LLC", "business, supplies"))
+        self.assertEqual((rows[1]["entity"], rows[1]["tags"]), ("", ""))
+
     def test_cashflow_and_spending(self, _):
         with MockMonarch():
             out = run("cashflow", "2026-09-01", "2026-09-30")[1]
