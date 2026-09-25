@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 (2026-09-25)
 
 - Transactions include each one's business entity and tags.
 - `tx --tag NAME` (repeatable) filters transactions by tag.

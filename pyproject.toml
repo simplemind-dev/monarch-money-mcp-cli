@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "monarch-money-mcp-cli"
-version = "0.1.0"
+version = "0.1.1"
 description = "Read-only Monarch Money MCP server and CLI. Pull accounts, transactions, cash flow, spending and income into Claude or your terminal. Zero dependencies, token in the macOS Keychain."
 readme = "README.md"
 license = "MIT"
