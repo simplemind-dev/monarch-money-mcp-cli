@@ -12,13 +12,13 @@ There are no third-party dependencies beyond the MCP SDK, and your session token
 Requires macOS, Python 3.11+, and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv tool install 'monarch-money-mcp-cli[mcp] @ git+https://github.com/simplemind-dev/monarch-money-mcp-cli'
+uv tool install 'monarch-money-mcp-cli[mcp]'
 monarch auth                                              # email, password, MFA code
 monarch doctor                                            # everything should be ok
 claude mcp add monarch -s user -- "$(which monarch)" mcp  # then restart Claude Code
 ```
 
-With pipx, use `pipx install` instead of `uv tool install`.
+Or with pipx: `pipx install 'monarch-money-mcp-cli[mcp]'`.
 
 ## Commands
 

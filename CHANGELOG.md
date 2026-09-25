@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-09-25)
 
 - `monarch auth`: login, status, logout via macOS Keychain.
 - `monarch accounts list`, `transactions`/`tx`, `cashflow`, `spending`, and `income` by category.

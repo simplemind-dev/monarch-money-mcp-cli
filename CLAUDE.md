@@ -63,7 +63,7 @@ If `monarch` isn't found, check `~/.local/bin/monarch` and `uv tool list` first;
 | `keychain_token` (fail) | No token stored, or it's malformed | Run `! monarch auth` | User |
 | `api` (fail, "session expired") | Token was rejected | Run `! monarch auth` | User |
 | `api` (fail, other) | Network/API outage or change | Report the detail, retry once; change nothing | — |
-| `mcp_extra` (warn) | Installed without `[mcp]` | `uv tool install --force 'monarch-money-mcp-cli[mcp] @ git+https://github.com/simplemind-dev/monarch-money-mcp-cli'` | Claude, after saying so |
+| `mcp_extra` (warn) | Installed without `[mcp]` | `uv tool install --force 'monarch-money-mcp-cli[mcp]'` | Claude, after saying so |
 | `mcp_server` (fail) | Server didn't start, or a tool is missing | Reinstall as above; else report `detail`'s stderr | Claude |
 | `mcp_clients` (warn, "discontinued Monarch connector") | Stale `https://api.monarch.com/mcp` entry | Run the `claude mcp remove ...` from `detail` (local scope: prefix `cd <project> &&`) | Claude |
 | `mcp_clients` (warn, "registered differently across scopes") | A local-scope entry shadows the user's | `cd <project> && claude mcp remove monarch -s local` | Claude |

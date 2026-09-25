@@ -34,8 +34,7 @@ from monarch_money_cli.client import (
 
 EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_AUTH = 0, 1, 2, 3
 # Shown when the [mcp] extra is missing. Use the installer that installed monarch (uv tool or pipx).
-MCP_REINSTALL = ("uv tool install --force "
-                 "'monarch-money-mcp-cli[mcp] @ git+https://github.com/simplemind-dev/monarch-money-mcp-cli'")
+MCP_REINSTALL = "uv tool install --force 'monarch-money-mcp-cli[mcp]'"
 CLI_MAX_TRANSACTIONS = 1000
 
 
