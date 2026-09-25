@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling==1.32.4"]
+build-backend = "hatchling.build"
+
+[project]
+name = "monarch-money-mcp-cli"
+version = "0.1.0"
+description = "Read-only Monarch Money MCP server and CLI. Pull accounts, transactions, cash flow, spending and income into Claude or your terminal. Zero dependencies, token in the macOS Keychain."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{ name = "simplemind" }]
+keywords = ["monarch", "monarch-money", "mcp", "mcp-server", "model-context-protocol", "claude", "claude-code", "cli", "personal-finance", "budgeting", "budget", "keychain"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial",
+]
+# Core CLI: standard library only.
+dependencies = []
+
+[project.optional-dependencies]
+# MCP server: only the official Model Context Protocol SDK.
+mcp = ["mcp==2.2.0"]
+
+[project.scripts]
+monarch = "monarch_money_cli.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/simplemind-dev/monarch-money-mcp-cli"
+Issues = "https://github.com/simplemind-dev/monarch-money-mcp-cli/issues"
+Changelog = "https://github.com/simplemind-dev/monarch-money-mcp-cli/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/monarch_money_cli"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "LICENSE", "SECURITY.md", "CHANGELOG.md", "CONTRIBUTING.md"]
