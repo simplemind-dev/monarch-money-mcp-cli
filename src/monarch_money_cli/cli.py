@@ -197,11 +197,12 @@ def cmd_transactions(args: argparse.Namespace) -> int:
     async def fetch() -> dict[str, Any]:
         c = service.client()
         scope = await service.resolve_entities(c, args.entity)
+        tags = await service.resolve_tags(c, args.tag)
         got: list[dict[str, Any]] = []
         offset, total = args.offset, 0
         while len(got) < args.limit:
             page = await service.transactions(c, start, end, args.search, args.account,
-                                              min(service.MAX_PAGE, args.limit - len(got)), offset, scope)
+                                              min(service.MAX_PAGE, args.limit - len(got)), offset, scope, tags)
             got += page["transactions"]
             total = page["total"]
             offset += page["returned"]
@@ -211,6 +212,8 @@ def cmd_transactions(args: argparse.Namespace) -> int:
                "returned": len(got), "has_more": offset < total, "transactions": got}
         if scope is not None:
             out["entity_scope"] = scope
+        if tags:
+            out["tag_filter"] = [t["name"] for t in tags]
         return out
 
     data = asyncio.run(fetch())
@@ -219,7 +222,8 @@ def cmd_transactions(args: argparse.Namespace) -> int:
     human = _table(rows, [("date", "DATE"), ("merchant", "MERCHANT"), ("category", "CATEGORY"),
                           ("account", "ACCOUNT"), ("entity", "ENTITY"), ("tags", "TAGS"),
                           ("amount", "AMOUNT"), ("pending", "PENDING")], {"amount"})
-    human = _scope_line(data.get("entity_scope")) + human
+    tag_line = f"Tags: {', '.join(data['tag_filter'])}\n\n" if data.get("tag_filter") else ""
+    human = _scope_line(data.get("entity_scope")) + tag_line + human
     human += f"\n\n{data['returned']} of {data['total']} transactions, {start} to {end}"
     if data["has_more"]:
         human += " (use --limit or --offset for more)"
@@ -627,6 +631,8 @@ def build_parser() -> argparse.ArgumentParser:
     tx.add_argument("--search", default="", help="filter by merchant or text")
     tx.add_argument("--account", action="append", default=[], metavar="ID",
                     help="filter by account id (repeatable; see `monarch accounts list`)")
+    tx.add_argument("--tag", action="append", default=[], metavar="NAME",
+                    help="only transactions with this tag (repeatable; all given tags must match)")
     tx.add_argument("--limit", type=int, default=50, help=f"max rows (default 50, max {CLI_MAX_TRANSACTIONS})")
     tx.add_argument("--offset", type=int, default=0, help="skip this many rows")
     tx.set_defaults(func=cmd_transactions)

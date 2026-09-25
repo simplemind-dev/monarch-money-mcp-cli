@@ -72,6 +72,18 @@ class Commands(unittest.TestCase):
         self.assertEqual((rows[0]["entity"], rows[0]["tags"]), ("Acme LLC", "business, supplies"))
         self.assertEqual((rows[1]["entity"], rows[1]["tags"]), ("", ""))
 
+    def test_tx_tag_filter_resolves_names_to_ids(self, _):
+        with MockMonarch() as m:
+            code, out, _ = run("tx", "--tag", "business", "--tag", "SUPPLIES", "--json")
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(out)["tag_filter"], ["Business", "Supplies"])
+            sent = [r["body"]["variables"]["filters"]["tags"] for r in m.requests
+                    if r["body"].get("operationName") == "GetTransactionsList"]
+            self.assertTrue(sent and all(tags == ["g1", "g2"] for tags in sent), sent)
+            code, _, err = run("tx", "--tag", "nope")
+            self.assertEqual(code, cli.EXIT_ERROR)
+            self.assertIn("Unknown tag 'nope'", err)
+
     def test_cashflow_and_spending(self, _):
         with MockMonarch():
             out = run("cashflow", "2026-09-01", "2026-09-30")[1]

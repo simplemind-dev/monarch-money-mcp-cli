@@ -115,6 +115,22 @@ def _valid_entities(ents: list[dict[str, Any]]) -> str:
     return "Valid: " + ", ".join([*names, HOUSEHOLD]) + ". See `monarch entities`."
 
 
+async def resolve_tags(c: MonarchClient, names: list[str] | None) -> list[dict[str, str]]:
+    """Tag names (case-insensitive, exact) to [{"id", "name"}]. Tag names are untrusted text."""
+    if not names:
+        return []
+    tags = [{"id": t.get("id"), "name": t.get("name") or ""}
+            for t in (await c.tags()).get("householdTransactionTags") or []]
+    picked = []
+    for raw in names:
+        match = [t for t in tags if t["name"].casefold() == raw.strip().casefold()]
+        if not match:
+            valid = ", ".join(sorted(repr(t["name"]) for t in tags))
+            raise ValueError(f"Unknown tag {raw!r}. Valid: {valid}.")
+        picked.append(match[0])
+    return picked
+
+
 async def resolve_entities(c: MonarchClient, specs: list[str] | None) -> dict[str, Any] | None:
     """Turn --entity values (id, name, or `household`) into a scope, or None for no scope.
 
@@ -186,12 +202,14 @@ async def accounts(c: MonarchClient, include_hidden: bool = False,
 
 async def transactions(c: MonarchClient, start: str, end: str, search: str = "",
                        account_ids: list[str] | None = None, limit: int = 50,
-                       offset: int = 0, scope: dict[str, Any] | None = None) -> dict[str, Any]:
+                       offset: int = 0, scope: dict[str, Any] | None = None,
+                       tags: list[dict[str, str]] | None = None) -> dict[str, Any]:
     if not 1 <= limit <= MAX_PAGE:
         raise ValueError(f"limit must be between 1 and {MAX_PAGE}.")
     if offset < 0:
         raise ValueError("offset must be >= 0.")
-    data = await c.transactions(start, end, search, account_ids or [], limit, offset, entity_set(scope))
+    data = await c.transactions(start, end, search, account_ids or [], limit, offset, entity_set(scope),
+                                [t["id"] for t in tags or []])
     block = data.get("allTransactions") or {}
     total = block.get("totalCount") or 0
     txns = [{
@@ -205,8 +223,11 @@ async def transactions(c: MonarchClient, start: str, end: str, search: str = "",
         "entity": (t.get("businessEntity") or {}).get("name") or "",  # "" = household
         "tags": [g.get("name") for g in t.get("tags") or [] if g.get("name")],
     } for t in block.get("results") or []]
-    return _scoped({"total": total, "offset": offset, "returned": len(txns),
-                    "has_more": offset + len(txns) < total, "transactions": txns}, scope)
+    out = {"total": total, "offset": offset, "returned": len(txns),
+           "has_more": offset + len(txns) < total, "transactions": txns}
+    if tags:
+        out["tag_filter"] = [t["name"] for t in tags]
+    return _scoped(out, scope)
 
 
 def _categories(data: dict[str, Any], group_type: str) -> list[dict[str, Any]]:

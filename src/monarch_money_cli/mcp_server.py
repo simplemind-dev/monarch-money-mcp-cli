@@ -93,10 +93,17 @@ async def list_transactions(
     offset: Annotated[int, Field(ge=0)] = 0,
     entity_ids: EntityIds = None,
     include_household: IncludeHousehold = False,
+    tags: Annotated[list[Annotated[str, Field(max_length=100)]] | None,
+                    Field(max_length=20, description="Only transactions with all of these tag names")] = None,
 ) -> dict[str, Any]:
     """List transactions in a date range, newest first. Paginate with offset while has_more is true."""
     start, end = _dates(start_date, end_date)
-    return await _run(_scoped(service.transactions, entity_ids, include_household),
+
+    async def call(c: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return await service.transactions(c, *args, tags=await service.resolve_tags(c, tags), **kwargs)
+
+    call.__name__ = "transactions"
+    return await _run(_scoped(call, entity_ids, include_household),
                       start, end, search, list(account_ids or []), limit, offset)
 
 

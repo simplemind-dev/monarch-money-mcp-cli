@@ -27,7 +27,7 @@ monarch auth [login|status|logout|paste-token]
 monarch doctor
 monarch entities
 monarch accounts list [--all]
-monarch tx [--search TEXT] [--account ID] [--limit N]
+monarch tx [--search TEXT] [--account ID] [--tag NAME] [--limit N]
 monarch cashflow [--by-entity]
 monarch spending
 monarch income

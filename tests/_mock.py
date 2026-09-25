@@ -23,6 +23,7 @@ TXNS = {"allTransactions": {"totalCount": 3, "results": [
      "category": {"name": "Paycheck"}, "merchant": {"name": "Employer"}, "account": {"displayName": "Checking"},
      "businessEntity": None, "tags": []},
 ]}}
+TAGS = {"householdTransactionTags": [{"id": "g1", "name": "Business"}, {"id": "g2", "name": "Supplies"}]}
 CASHFLOW = {
     "byCategory": [
         {"groupBy": {"category": {"name": "Interest", "group": {"type": "income"}}}, "summary": {"sum": 12.5}},
@@ -81,7 +82,7 @@ class MockMonarch:
                     self.end_headers()
                     return
                 op = body.get("operationName")
-                data = {"GetAccounts": ACCOUNTS, "GetTransactionsList": TXNS, "Web_GetCashFlowPage": CASHFLOW,
+                data = {"GetAccounts": ACCOUNTS, "GetTransactionsList": TXNS, "GetHouseholdTransactionTags": TAGS, "Web_GetCashFlowPage": CASHFLOW,
                         "Common_GetBusinessEntities": ENTITIES,
                         "Web_GetBusinessEntitySummaries": ENTITY_SUMMARIES}[op]
                 self._json({"data": data})

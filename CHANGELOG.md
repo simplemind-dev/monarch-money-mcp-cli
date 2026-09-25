@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Transactions include each one's business entity and tags.
+- `tx --tag NAME` (repeatable) filters transactions by tag.
 
 ## 0.1.0 (2026-09-25)
 

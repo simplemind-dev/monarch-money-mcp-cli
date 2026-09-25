@@ -165,6 +165,11 @@ query Web_GetCashFlowPage($filters: TransactionFilterInput) {
   }
 }"""
 
+Q_TAGS = """
+query GetHouseholdTransactionTags {
+  householdTransactionTags { id name }
+}"""
+
 # Never select notes, description, or logoUrl: free text and URLs the CLI has no use for.
 Q_ENTITIES = """
 query Common_GetBusinessEntities {
@@ -218,11 +223,16 @@ class MonarchClient:
             "filters": {"businessEntitySet": entity_set, "includeHidden": True}})
 
     async def transactions(self, start_date: str, end_date: str, search: str, account_ids: list[str],
-                           limit: int, offset: int, entity_set: dict[str, Any] | None = None) -> dict[str, Any]:
+                           limit: int, offset: int, entity_set: dict[str, Any] | None = None,
+                           tag_ids: list[str] | None = None) -> dict[str, Any]:
+        filters = _filters(start_date, end_date, search, account_ids, entity_set)
+        filters["tags"] = tag_ids or []
         return await self._gql("GetTransactionsList", Q_TRANSACTIONS, {
-            "offset": offset, "limit": limit, "orderBy": "date",
-            "filters": _filters(start_date, end_date, search, account_ids, entity_set),
+            "offset": offset, "limit": limit, "orderBy": "date", "filters": filters,
         })
+
+    async def tags(self) -> dict[str, Any]:
+        return await self._gql("GetHouseholdTransactionTags", Q_TAGS)
 
     async def cashflow(self, start_date: str, end_date: str,
                        entity_set: dict[str, Any] | None = None) -> dict[str, Any]:
