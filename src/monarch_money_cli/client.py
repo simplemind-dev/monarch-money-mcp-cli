@@ -188,6 +188,60 @@ query Web_GetBusinessEntitySummaries($filters: TransactionFilterInput!) {
 }"""
 
 
+# Budgets and goals come from one planning query. Goal image fields are never selected.
+Q_PLANNING = """
+query GetJointPlanningData($startDate: Date!, $endDate: Date!) {
+  budgetData(startMonth: $startDate, endMonth: $endDate) {
+    monthlyAmountsByCategory {
+      category { id }
+      monthlyAmounts { month plannedCashFlowAmount actualAmount remainingAmount }
+    }
+    totalsByMonth {
+      month
+      totalIncome { plannedAmount actualAmount remainingAmount }
+      totalExpenses { plannedAmount actualAmount remainingAmount }
+    }
+  }
+  categoryGroups { id name type categories { id name } }
+  goalsV2 {
+    id name archivedAt completedAt priority
+    plannedContributions(startMonth: $startDate, endMonth: $endDate) { month amount }
+    monthlyContributionSummaries(startMonth: $startDate, endMonth: $endDate) { month sum }
+  }
+}"""
+
+# Never select logoUrl.
+Q_RECURRING = """
+query Web_GetUpcomingRecurringTransactionItems($startDate: Date!, $endDate: Date!, $filters: RecurringTransactionFilter) {
+  recurringTransactionItems(startDate: $startDate, endDate: $endDate, filters: $filters) {
+    stream { id frequency amount isApproximate merchant { name } }
+    date isPast transactionId amount
+    category { name }
+    account { id displayName }
+  }
+}"""
+
+Q_HOLDINGS = """
+query Web_GetHoldings($input: PortfolioInput) {
+  portfolio(input: $input) {
+    aggregateHoldings {
+      edges {
+        node {
+          id quantity basis totalValue
+          holdings { name ticker typeDisplay }
+          security { name ticker typeDisplay currentPrice }
+        }
+      }
+    }
+  }
+}"""
+
+Q_NET_WORTH = """
+query GetAggregateSnapshots($filters: AggregateSnapshotFilters) {
+  aggregateSnapshots(filters: $filters) { date balance }
+}"""
+
+
 def _filters(start_date: str, end_date: str, search: str = "", accounts: list[str] | None = None,
              entity_set: dict[str, Any] | None = None) -> dict[str, Any]:
     f = {"search": search, "categories": [], "accounts": accounts or [], "tags": [],
@@ -245,3 +299,18 @@ class MonarchClient:
     async def entity_summaries(self, start_date: str, end_date: str) -> dict[str, Any]:
         return await self._gql("Web_GetBusinessEntitySummaries", Q_ENTITY_SUMMARIES,
                                {"filters": _filters(start_date, end_date)})
+
+    async def planning(self, start_date: str, end_date: str) -> dict[str, Any]:
+        return await self._gql("GetJointPlanningData", Q_PLANNING, {"startDate": start_date, "endDate": end_date})
+
+    async def recurring(self, start_date: str, end_date: str) -> dict[str, Any]:
+        return await self._gql("Web_GetUpcomingRecurringTransactionItems", Q_RECURRING,
+                               {"startDate": start_date, "endDate": end_date})
+
+    async def holdings(self, account_ids: list[str], as_of: str) -> dict[str, Any]:
+        return await self._gql("Web_GetHoldings", Q_HOLDINGS, {"input": {
+            "accountIds": account_ids, "startDate": as_of, "endDate": as_of, "includeHiddenHoldings": True}})
+
+    async def net_worth(self, start_date: str, end_date: str) -> dict[str, Any]:
+        return await self._gql("GetAggregateSnapshots", Q_NET_WORTH,
+                               {"filters": {"startDate": start_date, "endDate": end_date}})

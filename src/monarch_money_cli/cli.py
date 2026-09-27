@@ -300,6 +300,79 @@ def cmd_income(args: argparse.Namespace) -> int:
     return _cmd_categories(args, service.income_by_category)
 
 
+def cmd_budgets(args: argparse.Namespace) -> int:
+    start, end = _range(args)
+    d = asyncio.run(service.budgets(service.client(), start, end))
+    cols = [("category", "CATEGORY"), ("group", "GROUP"), ("budgeted", "BUDGETED"), ("actual", "ACTUAL"),
+            ("remaining", "REMAINING")]
+    money = ("budgeted", "actual", "remaining")
+    parts, records = [], []
+    for m in d["months"]:
+        rows = [{**c, **{k: _money(c[k]) for k in money}} for c in m["categories"]]
+        rows += [{"category": label, **{k: _money(m[key][k]) for k in money}}
+                 for label, key in (("TOTAL INCOME", "income"), ("TOTAL EXPENSES", "expenses"))]
+        parts.append(f"Budget {m['month']}\n\n" + _table(rows, cols, set(money)))
+        records += [{"month": m["month"], **c} for c in m["categories"]]
+        records += [{"month": m["month"], "category": f"TOTAL {key.upper()}", "group_type": key, **m[key]}
+                    for key in ("income", "expenses")]
+    _emit(args, d, "\n\n".join(parts) or "(no budget data)", records,
+          ["month", "category", "group", "group_type", "budgeted", "actual", "remaining"])
+    return EXIT_OK
+
+
+def cmd_goals(args: argparse.Namespace) -> int:
+    start, end = _range(args)
+    d = asyncio.run(service.goals(service.client(), start, end, include_archived=args.all))
+    rows = [{**g, "planned": _money(g["planned"]), "contributed": _money(g["contributed"])} for g in d["goals"]]
+    human = f"Goal contributions {start} to {end}\n\n" + _table(
+        rows, [("name", "GOAL"), ("status", "STATUS"), ("planned", "PLANNED"), ("contributed", "CONTRIBUTED")],
+        {"planned", "contributed"})
+    _emit(args, d, human, d["goals"], ["id", "name", "priority", "status", "planned", "contributed"])
+    return EXIT_OK
+
+
+def cmd_recurring(args: argparse.Namespace) -> int:
+    start, end = _range(args)
+    d = asyncio.run(service.recurring(service.client(), start, end))
+    rows = [{**i, "amount": ("~" if i["approximate"] else "") + _money(i["amount"])} for i in d["items"]]
+    human = f"Recurring {start} to {end}\n\n" + _table(
+        rows, [("date", "DATE"), ("merchant", "MERCHANT"), ("frequency", "FREQUENCY"), ("category", "CATEGORY"),
+               ("account", "ACCOUNT"), ("amount", "AMOUNT"), ("status", "STATUS")], {"amount"})
+    human += f"\n\n{d['count']} items, net {_money(d['total'])}"
+    _emit(args, d, human, d["items"], ["date", "merchant", "amount", "approximate", "frequency", "category",
+                                        "account", "status"])
+    return EXIT_OK
+
+
+def cmd_holdings(args: argparse.Namespace) -> int:
+    d = asyncio.run(service.holdings(service.client(), args.account))
+    rows = [{**h, **{k: _money(h[k]) for k in ("price", "value", "cost_basis", "gain")},
+             "quantity": "" if h["quantity"] is None else f"{h['quantity']:,.4f}".rstrip("0").rstrip(".")}
+            for h in d["holdings"]]
+    if rows:
+        rows.append({"ticker": "TOTAL", "value": _money(d["total_value"])})
+    human = _table(rows, [("ticker", "TICKER"), ("name", "NAME"), ("type", "TYPE"), ("quantity", "QTY"),
+                          ("price", "PRICE"), ("value", "VALUE"), ("cost_basis", "COST BASIS"), ("gain", "GAIN")],
+                   {"quantity", "price", "value", "cost_basis", "gain"})
+    if not d["account_ids"]:
+        human = "No investment accounts found. Pass --account ID (see `monarch accounts list`)."
+    _emit(args, d, human, d["holdings"], ["ticker", "name", "type", "quantity", "price", "value", "cost_basis",
+                                           "gain"])
+    return EXIT_OK
+
+
+def cmd_networth(args: argparse.Namespace) -> int:
+    start, end = _range(args, default="year")
+    d = asyncio.run(service.net_worth(service.client(), start, end, daily=args.daily))
+    rows = [{**p, "net_worth": _money(p["net_worth"])} for p in d["points"]]
+    human = f"Net worth {start} to {end}\n\n" + _table(rows, [("date", "DATE"), ("net_worth", "NET WORTH")],
+                                                       {"net_worth"})
+    if d["change"] is not None:
+        human += f"\n\nChange: {_money(d['change'])}"
+    _emit(args, d, human, d["points"], ["date", "net_worth"])
+    return EXIT_OK
+
+
 def _check_api() -> tuple[str, str, bool]:
     """(status, detail, auth_failed) for a live GetAccounts call with the stored token."""
     token = keychain.load()
@@ -568,9 +641,10 @@ def _add_range(p: argparse.ArgumentParser) -> None:
     g.add_argument("--to", metavar="YYYY-MM-DD", help="end date (needs --from)")
 
 
-def _range(args: argparse.Namespace) -> tuple[str, str]:
+def _range(args: argparse.Namespace, default: str = "month") -> tuple[str, str]:
     return service.period_range(args.start, args.end, month=args.month, year=args.year, ytd=args.ytd,
-                                last_month=args.last_month, days=args.days, from_=args.from_, to=args.to)
+                                last_month=args.last_month, days=args.days, from_=args.from_, to=args.to,
+                                default=default)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -599,6 +673,9 @@ def build_parser() -> argparse.ArgumentParser:
                "  monarch income --json\n"
                "  monarch cashflow --by-entity\n"
                "  monarch spending --entity household\n"
+               "  monarch budgets --last-month\n"
+               "  monarch recurring\n"
+               "  monarch networth --ytd\n"
                "\n"
                "something not working? run: monarch doctor",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -651,6 +728,31 @@ def build_parser() -> argparse.ArgumentParser:
     inc = sub.add_parser("income", parents=[common, scoped], help="income totals by category, largest first")
     _add_range(inc)
     inc.set_defaults(func=cmd_income)
+
+    bud = sub.add_parser("budgets", aliases=["budget"], parents=[common],
+                         help="budgeted vs actual per category, by month")
+    _add_range(bud)
+    bud.set_defaults(func=cmd_budgets)
+
+    goal = sub.add_parser("goals", parents=[common], help="savings goals: planned vs contributed in the range")
+    _add_range(goal)
+    goal.add_argument("--all", action="store_true", help="include archived goals")
+    goal.set_defaults(func=cmd_goals)
+
+    rec = sub.add_parser("recurring", parents=[common], help="recurring bills and income due in the range")
+    _add_range(rec)
+    rec.set_defaults(func=cmd_recurring)
+
+    hold = sub.add_parser("holdings", parents=[common], help="investment holdings with value and gain")
+    hold.add_argument("--account", action="append", default=[], metavar="ID",
+                      help="investment account id (repeatable; default: every brokerage account)")
+    hold.set_defaults(func=cmd_holdings)
+
+    nw = sub.add_parser("networth", aliases=["net-worth"], parents=[common],
+                        help="net worth over time (default: the last 12 months, month-end values)")
+    _add_range(nw)
+    nw.add_argument("--daily", action="store_true", help="one row per day instead of per month")
+    nw.set_defaults(func=cmd_networth)
 
     sub.add_parser("doctor", parents=[common], help="check login, API access, the MCP server and client configs, and PATH"
                    ).set_defaults(func=cmd_doctor)

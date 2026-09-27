@@ -5,7 +5,7 @@ from unittest import mock
 
 from monarch_money_cli import service
 from monarch_money_cli.client import AuthRequired, MonarchClient
-from tests._mock import TOKEN, MockMonarch
+from tests._mock import ACCOUNTS, TOKEN, MockMonarch
 
 
 class DateRange(unittest.TestCase):
@@ -224,3 +224,77 @@ class Entities(unittest.TestCase):
         with MockMonarch(), mock.patch.dict("tests._mock.ENTITY_SUMMARIES", summaries):
             d = self.run_(service.cashflow_by_entity(MonarchClient(TOKEN), "2026-09-01", "2026-09-30"))
         self.assertEqual(d["total"]["savings_rate"], 0.0)
+
+
+class PlanningAndInvestments(unittest.TestCase):
+    def run_(self, coro):
+        return asyncio.run(coro)
+
+    def test_trailing_year_default(self):
+        self.assertEqual(service.period_range(today=date(2026, 9, 25), default="year"), ("2025-10-01", "2026-09-25"))
+        self.assertEqual(service.trailing_year(date(2026, 1, 31)), ("2025-02-01", "2026-01-31"))
+        self.assertEqual(service.period_range(today=date(2026, 9, 25), default="year", ytd=True),
+                         ("2026-01-01", "2026-09-25"))
+
+    def test_budgets_per_month_skip_transfers_and_empty(self):
+        with MockMonarch() as m:
+            d = self.run_(service.budgets(MonarchClient(TOKEN), "2026-09-01", "2026-09-30"))
+        self.assertEqual(m.requests[-1]["body"]["variables"], {"startDate": "2026-09-01", "endDate": "2026-09-30"})
+        self.assertEqual([x["month"] for x in d["months"]], ["2026-09"])
+        sep = d["months"][0]
+        self.assertEqual([c["category"] for c in sep["categories"]], ["Paycheck", "Rent", "Groceries"])
+        self.assertEqual(sep["categories"][2], {"category": "Groceries", "group": "Living", "group_type": "expense",
+                                                "budgeted": 400, "actual": 300, "remaining": 100})
+        self.assertEqual(sep["expenses"], {"budgeted": 1900, "actual": 1800, "remaining": 100})
+
+    def test_goals_sum_contributions_and_hide_archived(self):
+        with MockMonarch() as m:
+            c = MonarchClient(TOKEN)
+            d = self.run_(service.goals(c, "2026-09-01", "2026-09-30"))
+            self.assertEqual(d["goals"], [{"id": "gl1", "name": "Emergency fund", "priority": 1, "status": "active",
+                                           "planned": 500, "contributed": 450}])
+            self.assertNotIn("image", m.requests[-1]["body"]["query"])
+            d = self.run_(service.goals(c, "2026-09-01", "2026-10-31", include_archived=True))
+            self.assertEqual([(g["name"], g["status"], g["planned"]) for g in d["goals"]],
+                             [("Emergency fund", "active", 1000), ("Old car", "archived", 0)])
+
+    def test_recurring_sorted_with_status(self):
+        with MockMonarch() as m:
+            d = self.run_(service.recurring(MonarchClient(TOKEN), "2026-09-01", "2026-09-30"))
+        self.assertNotIn("logoUrl", m.requests[-1]["body"]["query"])
+        self.assertEqual([(i["merchant"], i["status"]) for i in d["items"]],
+                         [("Netflix", "paid"), ("=cmd()", "missed"), ("Landlord", "upcoming")])
+        self.assertTrue(d["items"][0]["approximate"])
+        self.assertEqual(d["total"], -1575.49)
+
+    def test_holdings_default_to_brokerage_accounts(self):
+        brokerage = {"id": "3", "displayName": "Brokerage", "isHidden": False, "isAsset": True,
+                     "currentBalance": 6500, "includeInNetWorth": True, "type": {"name": "brokerage"},
+                     "subtype": {"name": "brokerage"}}
+        with MockMonarch() as m, mock.patch.dict(ACCOUNTS, {"accounts": [*ACCOUNTS["accounts"], brokerage]}):
+            d = self.run_(service.holdings(MonarchClient(TOKEN), today=date(2026, 9, 25)))
+        self.assertEqual(m.requests[-1]["body"]["variables"]["input"],
+                         {"accountIds": ["3"], "startDate": "2026-09-25", "endDate": "2026-09-25",
+                          "includeHiddenHoldings": True})
+        self.assertEqual(d["total_value"], 6500)
+        self.assertEqual([h["ticker"] for h in d["holdings"]], [None, "VTI"])
+        self.assertEqual(d["holdings"][1]["gain"], 500)
+        self.assertIsNone(d["holdings"][0]["gain"])  # unknown cost basis
+        self.assertEqual(d["holdings"][0]["name"], "Private fund")
+
+    def test_holdings_without_investment_accounts_makes_no_portfolio_call(self):
+        with MockMonarch() as m:
+            d = self.run_(service.holdings(MonarchClient(TOKEN)))
+        self.assertEqual(d["holdings"], [])
+        self.assertNotIn("Web_GetHoldings", [r["body"]["operationName"] for r in m.requests])
+
+    def test_net_worth_month_end_and_daily(self):
+        with MockMonarch():
+            c = MonarchClient(TOKEN)
+            d = self.run_(service.net_worth(c, "2026-07-01", "2026-09-30"))
+            self.assertEqual(d["points"], [{"date": "2026-07-31", "net_worth": 101000},
+                                           {"date": "2026-08-31", "net_worth": 103000},
+                                           {"date": "2026-09-10", "net_worth": 104500.5}])
+            self.assertEqual((d["start_net_worth"], d["change"]), (101000, 3500.5))
+            d = self.run_(service.net_worth(c, "2026-07-01", "2026-09-30", daily=True))
+            self.assertEqual((len(d["points"]), d["change"]), (5, 4500.5))

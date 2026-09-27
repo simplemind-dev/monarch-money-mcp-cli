@@ -51,6 +51,75 @@ ENTITY_SUMMARIES = {"businessEntitySummaries": [
      "summary": {"sumIncome": 4000, "sumExpense": -50, "savings": 3950, "savingsRate": 0.9875, "count": 3}},
 ]}
 
+# Placeholder planning data. imageStorageProviderId and archived goals prove trimming and filtering.
+PLANNING = {
+    "categoryGroups": [
+        {"id": "cg1", "name": "Income", "type": "income", "categories": [{"id": "c1", "name": "Paycheck"}]},
+        {"id": "cg2", "name": "Living", "type": "expense",
+         "categories": [{"id": "c2", "name": "Groceries"}, {"id": "c3", "name": "Rent"}, {"id": "c4", "name": "Gifts"}]},
+        {"id": "cg3", "name": "Transfers", "type": "transfer",
+         "categories": [{"id": "c5", "name": "Credit Card Payment"}]},
+    ],
+    "budgetData": {
+        "monthlyAmountsByCategory": [
+            {"category": {"id": "c1"}, "monthlyAmounts": [
+                {"month": "2026-09-01", "plannedCashFlowAmount": 5000, "actualAmount": 5000, "remainingAmount": 0},
+                {"month": "2026-10-01", "plannedCashFlowAmount": 5000, "actualAmount": 0, "remainingAmount": 5000}]},
+            {"category": {"id": "c2"}, "monthlyAmounts": [
+                {"month": "2026-09-01", "plannedCashFlowAmount": 400, "actualAmount": 300, "remainingAmount": 100}]},
+            {"category": {"id": "c3"}, "monthlyAmounts": [
+                {"month": "2026-09-01", "plannedCashFlowAmount": 1500, "actualAmount": 1500, "remainingAmount": 0}]},
+            {"category": {"id": "c4"}, "monthlyAmounts": [
+                {"month": "2026-09-01", "plannedCashFlowAmount": 0, "actualAmount": 0, "remainingAmount": 0}]},
+            {"category": {"id": "c5"}, "monthlyAmounts": [
+                {"month": "2026-09-01", "plannedCashFlowAmount": 0, "actualAmount": 1000, "remainingAmount": 0}]},
+        ],
+        "totalsByMonth": [
+            {"month": "2026-09-01",
+             "totalIncome": {"plannedAmount": 5000, "actualAmount": 5000, "remainingAmount": 0},
+             "totalExpenses": {"plannedAmount": 1900, "actualAmount": 1800, "remainingAmount": 100}},
+            {"month": "2026-10-01",
+             "totalIncome": {"plannedAmount": 5000, "actualAmount": 0, "remainingAmount": 5000},
+             "totalExpenses": {"plannedAmount": 1900, "actualAmount": 0, "remainingAmount": 1900}},
+        ],
+    },
+    "goalsV2": [
+        {"id": "gl1", "name": "Emergency fund", "archivedAt": None, "completedAt": None, "priority": 1,
+         "imageStorageProviderId": "secret-image-id",
+         "plannedContributions": [{"month": "2026-09-01", "amount": 500}, {"month": "2026-10-01", "amount": 500}],
+         "monthlyContributionSummaries": [{"month": "2026-09-01", "sum": 450}]},
+        {"id": "gl2", "name": "Old car", "archivedAt": "2025-01-01T00:00:00Z", "completedAt": None, "priority": 2,
+         "plannedContributions": [], "monthlyContributionSummaries": []},
+    ],
+}
+RECURRING = {"recurringTransactionItems": [
+    {"stream": {"id": "s2", "frequency": "monthly", "amount": -1500, "isApproximate": False,
+                "merchant": {"name": "Landlord", "logoUrl": "https://example.invalid/l.png"}},
+     "date": "2026-09-15", "isPast": False, "transactionId": None, "amount": -1500,
+     "category": {"name": "Rent"}, "account": {"id": "1", "displayName": "Checking"}},
+    {"stream": {"id": "s1", "frequency": "monthly", "amount": -15.49, "isApproximate": True,
+                "merchant": {"name": "Netflix"}},
+     "date": "2026-09-03", "isPast": True, "transactionId": "t9", "amount": -15.49,
+     "category": {"name": "Streaming"}, "account": {"id": "1", "displayName": "Checking"}},
+    {"stream": {"id": "s3", "frequency": "monthly", "amount": -60, "isApproximate": False,
+                "merchant": {"name": "=cmd()"}},
+     "date": "2026-09-05", "isPast": True, "transactionId": None, "amount": -60,
+     "category": None, "account": None},
+]}
+HOLDINGS = {"portfolio": {"aggregateHoldings": {"edges": [
+    {"node": {"id": "h1", "quantity": 10, "basis": 1000, "totalValue": 1500,
+              "holdings": [{"name": "Vanguard Total", "ticker": "VTI", "typeDisplay": "ETF"}],
+              "security": {"name": "Vanguard Total Stock Market ETF", "ticker": "VTI", "typeDisplay": "ETF",
+                           "currentPrice": 150}}},
+    {"node": {"id": "h2", "quantity": 1, "basis": None, "totalValue": 5000,
+              "holdings": [{"name": "Private fund", "ticker": None, "typeDisplay": "Other"}], "security": None}},
+]}}}
+NET_WORTH = {"aggregateSnapshots": [
+    {"date": "2026-07-01", "balance": 100000}, {"date": "2026-07-31", "balance": 101000},
+    {"date": "2026-08-15", "balance": 99000}, {"date": "2026-08-31", "balance": 103000},
+    {"date": "2026-09-10", "balance": 104500.5},
+]}
+
 
 class MockMonarch:
     def __init__(self) -> None:
@@ -84,7 +153,9 @@ class MockMonarch:
                 op = body.get("operationName")
                 data = {"GetAccounts": ACCOUNTS, "GetTransactionsList": TXNS, "GetHouseholdTransactionTags": TAGS, "Web_GetCashFlowPage": CASHFLOW,
                         "Common_GetBusinessEntities": ENTITIES,
-                        "Web_GetBusinessEntitySummaries": ENTITY_SUMMARIES}[op]
+                        "Web_GetBusinessEntitySummaries": ENTITY_SUMMARIES, "GetJointPlanningData": PLANNING,
+                        "Web_GetUpcomingRecurringTransactionItems": RECURRING, "Web_GetHoldings": HOLDINGS,
+                        "GetAggregateSnapshots": NET_WORTH}[op]
                 self._json({"data": data})
 
             def _json(self, obj):

@@ -20,7 +20,9 @@ class McpServer(unittest.TestCase):
         self.assertEqual({t.name for t in tools}, {"monarch_list_accounts", "monarch_list_transactions",
                                                   "monarch_cashflow_summary", "monarch_spending_by_category",
                                                   "monarch_income_by_category", "monarch_list_entities",
-                                                  "monarch_cashflow_by_entity"})
+                                                  "monarch_cashflow_by_entity", "monarch_budget_summary",
+                                                  "monarch_list_goals", "monarch_list_recurring",
+                                                  "monarch_list_holdings", "monarch_net_worth_history"})
         for t in tools:
             self.assertTrue(t.annotations.read_only_hint, t.name)
             self.assertFalse(t.annotations.destructive_hint, t.name)
@@ -31,6 +33,22 @@ class McpServer(unittest.TestCase):
                                                      {"start_date": "2026-09-01", "end_date": "2026-09-30"}))
             self.assertIn("4700", str(r))
             self.assertIn("expense_categories", str(r))
+
+    def test_planning_and_investment_tools(self):
+        args = {"start_date": "2026-09-01", "end_date": "2026-09-30"}
+        with MockMonarch(), mock.patch.object(keychain, "load", return_value=TOKEN):
+            def call(tool, a):
+                return str(asyncio.run(mcp_server.mcp.call_tool(tool, a)))
+            self.assertIn("Groceries", call("monarch_budget_summary", args))
+            goals = call("monarch_list_goals", args)
+            self.assertIn("Emergency fund", goals)
+            self.assertNotIn("secret-image-id", goals)
+            self.assertIn("Old car", call("monarch_list_goals", {**args, "include_archived": True}))
+            self.assertIn("Landlord", call("monarch_list_recurring", args))
+            self.assertIn("VTI", call("monarch_list_holdings", {"account_ids": ["3"]}))
+            self.assertIn("104500.5", call("monarch_net_worth_history", args))
+            with self.assertRaises(ToolError):
+                call("monarch_list_holdings", {"account_ids": ["3; drop"]})
 
     def test_category_tools_split_income_and_expenses(self):
         args = {"start_date": "2026-09-01", "end_date": "2026-09-30"}

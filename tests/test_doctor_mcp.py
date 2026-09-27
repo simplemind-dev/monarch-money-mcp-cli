@@ -17,7 +17,8 @@ except ImportError:  # [mcp] extra not installed
 
 TOOLS = {"monarch_list_accounts", "monarch_list_transactions", "monarch_cashflow_summary",
          "monarch_spending_by_category", "monarch_income_by_category", "monarch_list_entities",
-         "monarch_cashflow_by_entity"}
+         "monarch_cashflow_by_entity", "monarch_budget_summary", "monarch_list_goals", "monarch_list_recurring",
+         "monarch_list_holdings", "monarch_net_worth_history"}
 
 
 class RegisteredTools(unittest.TestCase):
@@ -30,7 +31,7 @@ class McpServerHandshake(unittest.TestCase):
     def test_real_subprocess_lists_every_tool(self):
         status, detail = cli._check_mcp_server()
         self.assertEqual(status, "ok", detail)
-        self.assertIn("7/7 tools listed", detail)
+        self.assertIn("12/12 tools listed", detail)
 
     def test_missing_tool_fails(self):
         with mock.patch.object(cli, "_registered_mcp_tools", return_value=TOOLS | {"monarch_extra"}):

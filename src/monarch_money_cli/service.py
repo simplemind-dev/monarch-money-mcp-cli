@@ -54,12 +54,12 @@ def _month(y: int, m: int) -> tuple[str, str]:
 def period_range(start: str | None = None, end: str | None = None, *, month: str | None = None,
                  year: str | None = None, ytd: bool = False, last_month: bool = False,
                  days: int | None = None, from_: str | None = None, to: str | None = None,
-                 today: date | None = None) -> tuple[str, str]:
+                 today: date | None = None, default: str = "month") -> tuple[str, str]:
     """Resolve one date selection to a YYYY-MM-DD range.
 
     Exactly one of: positional start/end, month (YYYY-MM), year (YYYY), ytd, last_month,
     days (last N days through today), or from_ with an optional to (default today).
-    Nothing given means the current month.
+    Nothing given means the current month, or with default="year", the 12 months through today.
     """
     picked = [n for n, v in [("START END", start is not None or end is not None), ("--month", month is not None),
                              ("--year", year is not None), ("--ytd", ytd), ("--last-month", last_month),
@@ -93,7 +93,16 @@ def period_range(start: str | None = None, end: str | None = None, *, month: str
         if from_ is None:
             raise DateUsageError("--to needs --from (use --from alone to run through today).")
         return date_range(from_, to or t.isoformat(), today=t)
+    if default == "year" and start is None and end is None:
+        return trailing_year(t)
     return date_range(start, end, today=t)
+
+
+def trailing_year(today: date | None = None) -> tuple[str, str]:
+    """The first of the month 11 months ago through today: 12 calendar months."""
+    t = today or date.today()
+    y, m = divmod(t.year * 12 + t.month - 1 - 11, 12)
+    return date(y, m + 1, 1).isoformat(), t.isoformat()
 
 
 async def entities(c: MonarchClient) -> dict[str, Any]:
@@ -295,3 +304,138 @@ async def cashflow_by_entity(c: MonarchClient, start: str, end: str) -> dict[str
              "savings_rate": max(0.0, savings / income) if income else None,
              "transactions": sum(r["transactions"] or 0 for r in rows)}
     return {"start_date": start, "end_date": end, "entities": rows, "total": total}
+
+
+def _in_months(month: str | None, start: str, end: str) -> bool:
+    """Whether a Monarch month ("YYYY-MM-01" or "YYYY-MM") falls in the start..end range."""
+    return bool(month) and start[:7] <= month[:7] <= end[:7]
+
+
+def _plan(block: dict[str, Any] | None) -> dict[str, Any]:
+    b = block or {}
+    return {"budgeted": b.get("plannedAmount"), "actual": b.get("actualAmount"), "remaining": b.get("remainingAmount")}
+
+
+async def budgets(c: MonarchClient, start: str, end: str) -> dict[str, Any]:
+    """Budgeted vs actual per month: income and expense totals, and every category with a budget
+    or activity. Amounts are as Monarch's budget shows them: expenses and income both positive."""
+    data = await c.planning(start, end)
+    cats: dict[str, dict[str, Any]] = {}
+    for g in data.get("categoryGroups") or []:
+        for cat in g.get("categories") or []:
+            cats[cat.get("id")] = {"category": cat.get("name"), "group": g.get("name"), "group_type": g.get("type")}
+    budget = data.get("budgetData") or {}
+    months: dict[str, dict[str, Any]] = {}
+    for t in budget.get("totalsByMonth") or []:
+        if _in_months(t.get("month"), start, end):
+            months[t["month"][:7]] = {"month": t["month"][:7], "income": _plan(t.get("totalIncome")),
+                                      "expenses": _plan(t.get("totalExpenses")), "categories": []}
+    for row in budget.get("monthlyAmountsByCategory") or []:
+        info = cats.get(((row.get("category") or {}).get("id")))
+        if info is None or info["group_type"] not in ("income", "expense"):
+            continue  # transfers aren't budgeted
+        for a in row.get("monthlyAmounts") or []:
+            month = (a.get("month") or "")[:7]
+            if month not in months or not (a.get("plannedCashFlowAmount") or a.get("actualAmount")):
+                continue
+            months[month]["categories"].append({**info, "budgeted": a.get("plannedCashFlowAmount"),
+                                                "actual": a.get("actualAmount"),
+                                                "remaining": a.get("remainingAmount")})
+    for m in months.values():
+        # Income first, then expenses; largest budget first within each.
+        m["categories"].sort(key=lambda x: (x["group_type"] != "income", -(x["budgeted"] or 0),
+                                            (x["category"] or "").casefold()))
+    return {"start_date": start, "end_date": end, "months": sorted(months.values(), key=lambda m: m["month"])}
+
+
+async def goals(c: MonarchClient, start: str, end: str, include_archived: bool = False) -> dict[str, Any]:
+    """Savings goals with planned and actual contributions in the range. Names are user-entered."""
+    out = []
+    for g in (await c.planning(start, end)).get("goalsV2") or []:
+        if g.get("archivedAt") and not include_archived:
+            continue
+        planned = [p for p in g.get("plannedContributions") or [] if _in_months(p.get("month"), start, end)]
+        actual = [s for s in g.get("monthlyContributionSummaries") or [] if _in_months(s.get("month"), start, end)]
+        out.append({
+            "id": g.get("id"),
+            "name": g.get("name"),
+            "priority": g.get("priority"),
+            "status": "archived" if g.get("archivedAt") else "completed" if g.get("completedAt") else "active",
+            "planned": round(sum(p.get("amount") or 0 for p in planned), 2),
+            "contributed": round(sum(s.get("sum") or 0 for s in actual), 2),
+        })
+    out.sort(key=lambda g: (g["priority"] is None, g["priority"] or 0, (g["name"] or "").casefold()))
+    return {"start_date": start, "end_date": end, "count": len(out), "goals": out}
+
+
+async def recurring(c: MonarchClient, start: str, end: str) -> dict[str, Any]:
+    """Recurring bills and income due in the range, earliest first. Merchant names are untrusted."""
+    items = []
+    for r in (await c.recurring(start, end)).get("recurringTransactionItems") or []:
+        stream = r.get("stream") or {}
+        items.append({
+            "date": r.get("date"),
+            "merchant": (stream.get("merchant") or {}).get("name"),
+            "amount": r.get("amount"),
+            "frequency": stream.get("frequency"),
+            "approximate": bool(stream.get("isApproximate")),
+            "category": (r.get("category") or {}).get("name"),
+            "account": (r.get("account") or {}).get("displayName"),
+            "status": "paid" if r.get("transactionId") else "missed" if r.get("isPast") else "upcoming",
+        })
+    items.sort(key=lambda i: (i["date"] or "", (i["merchant"] or "").casefold()))
+    return {"start_date": start, "end_date": end, "count": len(items),
+            "total": round(sum(i["amount"] or 0 for i in items), 2), "items": items}
+
+
+INVESTMENT_TYPE = "brokerage"
+
+
+async def holdings(c: MonarchClient, account_ids: list[str] | None = None,
+                   today: date | None = None) -> dict[str, Any]:
+    """Investment holdings, largest value first, combined across the given accounts (default:
+    every visible brokerage account)."""
+    if not account_ids:
+        account_ids = [a["id"] for a in (await accounts(c))["accounts"] if a["type"] == INVESTMENT_TYPE]
+    if not account_ids:
+        return {"account_ids": [], "count": 0, "total_value": 0, "holdings": []}
+    as_of = (today or date.today()).isoformat()
+    edges = ((((await c.holdings(account_ids, as_of)).get("portfolio") or {})
+              .get("aggregateHoldings") or {}).get("edges") or [])
+    out = []
+    for e in edges:
+        n = e.get("node") or {}
+        sec = n.get("security") or {}
+        first = (n.get("holdings") or [{}])[0] or {}  # manual holdings have no security
+        value, basis = n.get("totalValue"), n.get("basis")
+        out.append({
+            "ticker": sec.get("ticker") or first.get("ticker"),
+            "name": sec.get("name") or first.get("name"),
+            "type": sec.get("typeDisplay") or first.get("typeDisplay"),
+            "quantity": n.get("quantity"),
+            "price": sec.get("currentPrice"),
+            "value": value,
+            "cost_basis": basis,
+            "gain": round(value - basis, 2) if value is not None and basis else None,
+        })
+    out.sort(key=lambda h: -(h["value"] or 0))
+    return {"account_ids": account_ids, "count": len(out),
+            "total_value": round(sum(h["value"] or 0 for h in out), 2), "holdings": out}
+
+
+async def net_worth(c: MonarchClient, start: str, end: str, daily: bool = False) -> dict[str, Any]:
+    """Net worth over time: the last snapshot of each month (or every day), plus the change."""
+    snaps = sorted(((s.get("date"), s.get("balance")) for s in
+                    (await c.net_worth(start, end)).get("aggregateSnapshots") or []
+                    if s.get("date") and start <= s["date"] <= end), key=lambda s: s[0])
+    if not daily:
+        by_month: dict[str, tuple[str, Any]] = {}
+        for d, b in snaps:
+            by_month[d[:7]] = (d, b)  # sorted, so the last one per month wins
+        snaps = list(by_month.values())
+    points = [{"date": d, "net_worth": b} for d, b in snaps]
+    first = points[0]["net_worth"] if points else None
+    last = points[-1]["net_worth"] if points else None
+    change = round(last - first, 2) if first is not None and last is not None else None
+    return {"start_date": start, "end_date": end, "interval": "day" if daily else "month",
+            "start_net_worth": first, "end_net_worth": last, "change": change, "points": points}

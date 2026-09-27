@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- `monarch budgets`: budgeted vs actual per category and month, with income and expense totals.
+- `monarch goals`: savings goals with planned vs contributed amounts (`--all` includes archived).
+- `monarch recurring`: recurring bills and income due in the range, marked paid, missed, or upcoming.
+- `monarch holdings`: investment positions with value, cost basis, and gain (default: every brokerage account).
+- `monarch networth`: month-end (or `--daily`) net worth, defaulting to the last 12 months.
+- 5 matching read-only MCP tools (12 in total).
+
 ## 0.1.1 (2026-09-25)
 
 - Transactions include each one's business entity and tags.

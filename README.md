@@ -1,7 +1,8 @@
 # Monarch Money MCP server + CLI
 
 A read-only MCP server and command line tool for [Monarch Money](https://www.monarch.com). Use it to give
-Claude (or any MCP client) access to your accounts, transactions, cash flow, spending, and income.
+Claude (or any MCP client) access to your accounts, transactions, cash flow, spending, income, budgets,
+goals, recurring bills, investment holdings, and net worth.
 There are no third-party dependencies beyond the MCP SDK, and your session token stays in the macOS Keychain.
 
 > **Unofficial.** This project isn't affiliated with Monarch Money, Inc. It uses Monarch's private web API,
@@ -31,11 +32,18 @@ monarch tx [--search TEXT] [--account ID] [--tag NAME] [--limit N]
 monarch cashflow [--by-entity]
 monarch spending
 monarch income
+monarch budgets
+monarch goals [--all]
+monarch recurring
+monarch holdings [--account ID]
+monarch networth [--daily]
 ```
 
 - **Dates:** the default is the current month. Give `START END` (`YYYY-MM-DD`), or one of `--month YYYY-MM`,
   `--year YYYY`, `--ytd`, `--last-month`, `--days N`, or `--from DATE [--to DATE]`.
+  `networth` defaults to the last 12 months; `holdings` shows current positions and takes no dates.
 - **Business entities:** add `--entity <id|name|household>` to limit results to an entity. You can repeat it.
+  It works on `accounts`, `tx`, `cashflow`, `spending`, and `income`.
 - **Output:** `--output table|csv|json` (`--json` for short).
 
 ```bash
@@ -56,8 +64,9 @@ the path that `which monarch` prints, then restart the app:
 ```
 
 The tools are all read-only: `monarch_list_entities`, `monarch_list_accounts`, `monarch_list_transactions`,
-`monarch_cashflow_summary`, `monarch_cashflow_by_entity`, `monarch_spending_by_category`, and
-`monarch_income_by_category`.
+`monarch_cashflow_summary`, `monarch_cashflow_by_entity`, `monarch_spending_by_category`,
+`monarch_income_by_category`, `monarch_budget_summary`, `monarch_list_goals`, `monarch_list_recurring`,
+`monarch_list_holdings`, and `monarch_net_worth_history`.
 
 ## Troubleshooting
 

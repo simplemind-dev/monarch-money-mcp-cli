@@ -43,6 +43,9 @@ class Parser(unittest.TestCase):
         self.assertEqual(self.parse("accounts").entity, [])
         self.assertEqual(self.parse("tx", "--entity", "1", "--entity", "household").entity, ["1", "household"])
         self.assertTrue(self.parse("cashflow", "--by-entity").by_entity)
+        self.assertIs(self.parse("budget").func, cli.cmd_budgets)
+        self.assertIs(self.parse("net-worth").func, cli.cmd_networth)
+        self.assertEqual(self.parse("holdings", "--account", "3").account, ["3"])
 
 
 @mock.patch.object(keychain, "load", return_value=TOKEN)
@@ -166,7 +169,7 @@ class Commands(unittest.TestCase):
                  (["--from", "2026-01-01", "--to", "2026-01-31"], ("2026-01-01", "2026-01-31")),
                  (["2026-03-01", "2026-03-31"], ("2026-03-01", "2026-03-31"))]
         for cmd in (["tx"], ["cashflow"], ["spending"], ["income"], ["cashflow", "--by-entity"],
-                    ["spending", "--entity", "household"]):
+                    ["spending", "--entity", "household"], ["budgets"], ["goals"], ["recurring"], ["networth"]):
             for opts, want in cases:
                 with MockMonarch() as m:
                     code, _, err = run(*cmd, *opts)
@@ -241,6 +244,51 @@ class Commands(unittest.TestCase):
             self.assertEqual([r["entity"] for r in rows], ["Acme LLC", "household", "TOTAL"])
             d = json.loads(run("cashflow", "--by-entity", "--json")[1])
             self.assertEqual(d["total"]["savings"], 4700)
+
+    def test_budgets_goals_recurring(self, _):
+        with MockMonarch():
+            code, out, err = run("budgets", "--month", "2026-09")
+            self.assertEqual(code, 0, err)
+            self.assertIn("Budget 2026-09", out)
+            self.assertRegex(out, r"Groceries\s+Living\s+400\.00\s+300\.00\s+100\.00")
+            self.assertRegex(out, r"TOTAL EXPENSES\s+1,900\.00\s+1,800\.00\s+100\.00")
+            self.assertNotIn("Credit Card Payment", out)
+            rows = list(csv.DictReader(io.StringIO(run("budgets", "--month", "2026-09", "--output", "csv")[1])))
+            self.assertEqual(rows[-1]["category"], "TOTAL EXPENSES")
+
+            code, out, _ = run("goals", "--month", "2026-09")
+            self.assertIn("Emergency fund", out)
+            self.assertNotIn("Old car", out)
+            self.assertIn("Old car", run("goals", "--all")[1])
+
+            code, out, _ = run("recurring", "--month", "2026-09")
+            self.assertEqual(code, 0)
+            self.assertIn("~-15.49", out)
+            self.assertIn("3 items, net -1,575.49", out)
+            self.assertIn("'=cmd()", run("recurring", "--output", "csv")[1])
+
+    def test_holdings_and_networth(self, _):
+        with MockMonarch():
+            self.assertIn("No investment accounts found", run("holdings")[1])
+            code, out, err = run("holdings", "--account", "3")
+            self.assertEqual(code, 0, err)
+            self.assertRegex(out, r"VTI\s+Vanguard Total Stock Market ETF\s+ETF\s+10\s+150\.00\s+1,500\.00")
+            self.assertRegex(out, r"TOTAL\s+6,500\.00")
+            self.assertEqual(run("holdings", "--account", "x")[0], cli.EXIT_USAGE)
+            code, out, _ = run("networth", "2026-07-01", "2026-09-30")
+            self.assertIn("2026-08-31  103,000.00", out)
+            self.assertIn("Change: 3,500.50", out)
+            self.assertEqual(len(json.loads(run("networth", "2026-07-01", "2026-09-30", "--daily", "--json")[1])
+                                 ["points"]), 5)
+        with mock.patch.object(service, "date", wraps=date) as d, MockMonarch() as m:
+            d.today.return_value = date(2026, 9, 25)
+            run("networth")
+            self.assertEqual(m.requests[-1]["body"]["variables"]["filters"],
+                             {"startDate": "2025-10-01", "endDate": "2026-09-25"})
+
+    def test_new_commands_reject_entity(self, _):
+        for cmd in ("budgets", "goals", "recurring", "holdings", "networth"):
+            self.assertEqual(run(cmd, "--entity", "101")[0], cli.EXIT_USAGE, cmd)
 
     def test_mcp_without_extra_shows_reinstall_hint(self, _):
         with mock.patch.dict("sys.modules", {"monarch_money_cli.mcp_server": None}):
