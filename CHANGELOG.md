@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.2 (2026-10-01)
 
 - `monarch budgets`: budgeted vs actual per category and month, with income and expense totals.
 - `monarch goals`: savings goals with planned vs contributed amounts (`--all` includes archived).

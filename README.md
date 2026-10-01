@@ -21,6 +21,8 @@ claude mcp add monarch -s user -- "$(which monarch)" mcp  # then restart Claude 
 
 Or with pipx: `pipx install 'monarch-money-mcp-cli[mcp]'`.
 
+To upgrade: `uv tool upgrade monarch-money-mcp-cli` (or `pipx upgrade monarch-money-mcp-cli`), then restart Claude Code.
+
 ## Commands
 
 ```bash
