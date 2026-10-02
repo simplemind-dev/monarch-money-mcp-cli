@@ -232,6 +232,50 @@ def cmd_transactions(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_categories_list(args: argparse.Namespace) -> int:
+    d = asyncio.run(service.categories(service.client()))
+    rows = [{**c, "disabled": "yes" if c["disabled"] else ""} for c in d["categories"]]
+    _emit(args, d, _table(rows, [("id", "ID"), ("name", "NAME"), ("group", "GROUP"), ("group_type", "TYPE"),
+                                 ("disabled", "DISABLED")]),
+          d["categories"], ["id", "name", "group", "group_type", "disabled"])
+    return EXIT_OK
+
+
+def _names(refs: list[dict[str, Any]]) -> str:
+    return ", ".join(r["name"] or "" for r in refs) or "(none)"
+
+
+def _emit_change(args: argparse.Namespace, d: dict[str, Any], field: str, before: str, after: str) -> None:
+    """Show a write's before/after. The preview hint is CLI-only: the service doesn't know about --yes."""
+    t = d["transaction"]
+    message = d["message"]
+    if d["changed"] and not d["applied"]:
+        message += " Re-run with --yes to apply."
+    human = "\n".join([f"Transaction {t['id']}  {t['date']}  {t['merchant'] or ''}  {_money(t['amount'])}",
+                       f"{field}: {before} -> {after}" if d["changed"] else f"{field}: {before}", message])
+    _emit(args, d, human, [{"transaction_id": t["id"], "field": field.lower(), "before": before, "after": after,
+                            "changed": d["changed"], "applied": d["applied"]}],
+          ["transaction_id", "field", "before", "after", "changed", "applied"])
+
+
+def cmd_tx_set_category(args: argparse.Namespace) -> int:
+    d = asyncio.run(service.set_transaction_category(service.client(allow_writes=args.yes), args.txn_id,
+                                                     args.category, apply=args.yes))
+    _emit_change(args, d, "Category", (d["before"]["category"] or {}).get("name") or "(none)",
+                 d["after"]["category"]["name"] or "")
+    return EXIT_OK
+
+
+def cmd_tx_tag(args: argparse.Namespace) -> int:
+    if not args.add and not args.remove:
+        print("monarch: give at least one --add or --remove", file=sys.stderr)
+        return EXIT_USAGE
+    d = asyncio.run(service.update_transaction_tags(service.client(allow_writes=args.yes), args.txn_id,
+                                                    args.add, args.remove, apply=args.yes))
+    _emit_change(args, d, "Tags", _names(d["before"]["tags"]), _names(d["after"]["tags"]))
+    return EXIT_OK
+
+
 def _rate(v: float | None) -> str:
     return "" if v is None else f"{v * 100:.1f}%"
 
@@ -404,7 +448,7 @@ def _registered_mcp_tools() -> set[str]:
 
 def _check_mcp_server(timeout: float = MCP_HANDSHAKE_TIMEOUT) -> tuple[str, str]:
     """Start `monarch mcp` and run initialize + tools/list over stdio. Needs no network or token."""
-    expected = _registered_mcp_tools()
+    expected = _registered_mcp_tools()  # read tools only: write tools need `monarch mcp --allow-writes`
     errlog = tempfile.TemporaryFile("w+")  # a file, not a pipe: a chatty server can't block on it
     proc = subprocess.Popen([sys.executable, "-m", "monarch_money_cli", "mcp"], stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=errlog, text=True)
@@ -622,7 +666,7 @@ def cmd_mcp(args: argparse.Namespace) -> int:
         print(f"The MCP server needs the optional [mcp] extra. Reinstall with it, e.g.:\n  {MCP_REINSTALL}",
               file=sys.stderr)
         return EXIT_ERROR
-    run()
+    run(allow_writes=args.allow_writes)
     return EXIT_OK
 
 
@@ -647,12 +691,38 @@ def _range(args: argparse.Namespace, default: str = "month") -> tuple[str, str]:
                                 default=default)
 
 
-def build_parser() -> argparse.ArgumentParser:
+def _common() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--output", choices=["table", "csv", "json"], default="table",
                         help="output format (default: table)")
     common.add_argument("--json", dest="output", action="store_const", const="json",
                         default=argparse.SUPPRESS, help="same as --output json")
+    return common
+
+
+TX_WRITE_ACTIONS = ("set-category", "tag")
+
+
+def build_tx_write_parser(prog: str = "monarch tx") -> argparse.ArgumentParser:
+    """`monarch tx set-category|tag`. Separate from build_parser because `tx` takes positional dates."""
+    common = _common()
+    yes = argparse.ArgumentParser(add_help=False)
+    yes.add_argument("txn_id", metavar="TXN_ID", help="transaction id (see `monarch tx --json`)")
+    yes.add_argument("--yes", action="store_true", help="make the change (default: preview only; nothing is changed)")
+    p = argparse.ArgumentParser(prog=prog, description="Change one transaction. Previews unless --yes is given.")
+    sub = p.add_subparsers(dest="tx_command", required=True, metavar="ACTION")
+    sc = sub.add_parser("set-category", parents=[common, yes], help="set a transaction's category")
+    sc.add_argument("--category", required=True, metavar="NAME|ID", help="see `monarch categories`")
+    sc.set_defaults(func=cmd_tx_set_category)
+    tg = sub.add_parser("tag", parents=[common, yes], help="add or remove a transaction's tags")
+    tg.add_argument("--add", action="append", default=[], metavar="NAME|ID", help="tag to add (repeatable)")
+    tg.add_argument("--remove", action="append", default=[], metavar="NAME|ID", help="tag to remove (repeatable)")
+    tg.set_defaults(func=cmd_tx_tag)
+    return p
+
+
+def build_parser() -> argparse.ArgumentParser:
+    common = _common()
     scoped = argparse.ArgumentParser(add_help=False)
     scoped.add_argument("--entity", action="append", default=[], metavar="ID|NAME|household",
                         help="limit to a business entity by id or name, or `household` for everything "
@@ -660,7 +730,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = argparse.ArgumentParser(
         prog="monarch",
-        description="Unofficial, read-only CLI and MCP server for Monarch Money. Not affiliated with Monarch Money.",
+        description="Unofficial CLI and MCP server for Monarch Money: read-only unless you pass --yes to a "
+                    "tx set-category or tx tag command. Not affiliated with Monarch Money.",
         epilog="examples:\n"
                "  monarch auth\n"
                "  monarch accounts list\n"
@@ -676,6 +747,9 @@ def build_parser() -> argparse.ArgumentParser:
                "  monarch budgets --last-month\n"
                "  monarch recurring\n"
                "  monarch networth --ytd\n"
+               "  monarch categories\n"
+               "  monarch tx set-category 123456 --category Groceries       (preview; add --yes to apply)\n"
+               "  monarch tx tag 123456 --add Business --remove Personal    (preview; add --yes to apply)\n"
                "\n"
                "something not working? run: monarch doctor",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -703,7 +777,8 @@ def build_parser() -> argparse.ArgumentParser:
                    ).set_defaults(func=cmd_entities)
 
     tx = sub.add_parser("transactions", aliases=["tx"], parents=[common, scoped],
-                        help="list transactions in a date range")
+                        help="list transactions in a date range, or change one (set-category, tag)",
+                        epilog="to change one transaction: monarch tx set-category --help, monarch tx tag --help")
     _add_range(tx)
     tx.add_argument("--search", default="", help="filter by merchant or text")
     tx.add_argument("--account", action="append", default=[], metavar="ID",
@@ -713,6 +788,9 @@ def build_parser() -> argparse.ArgumentParser:
     tx.add_argument("--limit", type=int, default=50, help=f"max rows (default 50, max {CLI_MAX_TRANSACTIONS})")
     tx.add_argument("--offset", type=int, default=0, help="skip this many rows")
     tx.set_defaults(func=cmd_transactions)
+
+    sub.add_parser("categories", parents=[common], help="list categories (ids and names for tx set-category)"
+                   ).set_defaults(func=cmd_categories_list)
 
     cf = sub.add_parser("cashflow", parents=[common, scoped],
                         help="income, expenses, savings rate, and totals by category")
@@ -757,12 +835,19 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("doctor", parents=[common], help="check login, API access, the MCP server and client configs, and PATH"
                    ).set_defaults(func=cmd_doctor)
 
-    sub.add_parser("mcp", help="run the MCP server over stdio (needs the [mcp] extra)").set_defaults(func=cmd_mcp)
+    mcp = sub.add_parser("mcp", help="run the MCP server over stdio (needs the [mcp] extra)")
+    mcp.add_argument("--allow-writes", action="store_true",
+                     help="also offer the tools that change a transaction's category or tags")
+    mcp.set_defaults(func=cmd_mcp)
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if len(argv) >= 2 and argv[0] in ("tx", "transactions") and argv[1] in TX_WRITE_ACTIONS:
+        args = build_tx_write_parser(f"monarch {argv[0]}").parse_args(argv[1:])
+    else:
+        args = build_parser().parse_args(argv)
     for acct_id in getattr(args, "account", []) or []:
         if not acct_id.isdigit() or len(acct_id) > 30:
             print(f"monarch: invalid account id: {acct_id!r}", file=sys.stderr)
