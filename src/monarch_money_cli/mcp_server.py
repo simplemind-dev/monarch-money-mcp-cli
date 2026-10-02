@@ -8,7 +8,7 @@ Nothing may be printed to stdout here: stdout is the MCP transport.
 from __future__ import annotations
 
 import sys
-from typing import Annotated, Any
+from typing import Literal, Annotated, Any
 
 from mcp.server.mcpserver import AcceptedElicitation, Context, Elicit, ElicitationResult, MCPServer, Resolve
 from mcp.server.mcpserver.exceptions import ToolError
@@ -210,7 +210,11 @@ NOT_CONFIRMED = "Not applied: the user did not confirm."
 
 
 class Confirm(BaseModel):
-    confirm: bool = Field(description="Apply this change")
+    choice: Literal["Apply this change", "Cancel"] = Field(description="Choose with the arrow keys, then press Enter")
+
+    @property
+    def confirm(self) -> bool:
+        return self.choice == "Apply this change"
 
 
 def _supports_elicitation(ctx: Context) -> bool:
