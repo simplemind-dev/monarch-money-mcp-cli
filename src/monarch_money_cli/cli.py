@@ -245,11 +245,12 @@ def _names(refs: list[dict[str, Any]]) -> str:
     return ", ".join(r["name"] or "" for r in refs) or "(none)"
 
 
-def _emit_change(args: argparse.Namespace, d: dict[str, Any], field: str, before: str, after: str) -> None:
-    """Show a write's before/after. The preview hint is CLI-only: the service doesn't know about --yes."""
+def _emit_change(args: argparse.Namespace, d: dict[str, Any], field: str, before: str, after: str,
+                 hint: bool = True) -> None:
+    """Show a write's before/after. The --yes hint is CLI-only: the service doesn't know about --yes."""
     t = d["transaction"]
     message = d["message"]
-    if d["changed"] and not d["applied"]:
+    if hint and d["changed"] and not d["applied"]:
         message += " Re-run with --yes to apply."
     human = "\n".join([f"Transaction {t['id']}  {t['date']}  {t['merchant'] or ''}  {_money(t['amount'])}",
                        f"{field}: {before} -> {after}" if d["changed"] else f"{field}: {before}", message])
@@ -258,22 +259,65 @@ def _emit_change(args: argparse.Namespace, d: dict[str, Any], field: str, before
           ["transaction_id", "field", "before", "after", "changed", "applied"])
 
 
-def cmd_tx_set_category(args: argparse.Namespace) -> int:
-    d = asyncio.run(service.set_transaction_category(service.client(allow_writes=args.yes), args.txn_id,
-                                                     args.category, apply=args.yes))
-    _emit_change(args, d, "Category", (d["before"]["category"] or {}).get("name") or "(none)",
-                 d["after"]["category"]["name"] or "")
+def _interactive() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _confirm(question: str = "Apply this change? [y/N] ") -> bool:
+    """Ask on the terminal. Only y/yes applies; anything else, EOF, or Ctrl-C doesn't."""
+    try:
+        return input(question).strip().lower() in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+
+
+def _change(args: argparse.Namespace, write: Callable[..., Any],
+            labels: Callable[[dict[str, Any]], tuple[str, str, str]]) -> int:
+    """Run a write: --yes applies at once; on a terminal, preview then ask; otherwise preview only.
+    `write(client, apply)` is the service call; `labels(result)` gives (field, before, after)."""
+    if args.yes:
+        d = asyncio.run(write(service.client(allow_writes=True), apply=True))
+        _emit_change(args, d, *labels(d))
+        return EXIT_OK
+    d = asyncio.run(write(service.client(), apply=False))
+    ask = d["changed"] and _interactive()
+    _emit_change(args, d, *labels(d), hint=not ask)
+    if not ask:
+        return EXIT_OK
+    if not _confirm():
+        print("Not applied.")
+        return EXIT_OK
+
+    async def apply() -> dict[str, Any] | None:
+        now = await write(service.client(), apply=False)
+        if (now["before"], now["after"]) != (d["before"], d["after"]):
+            return None  # changed since the preview the user confirmed
+        return await write(service.client(allow_writes=True), apply=True)
+
+    done = asyncio.run(apply())
+    if done is None:
+        print("monarch: not applied: the transaction changed since the preview; run the command again",
+              file=sys.stderr)
+        return EXIT_ERROR
+    _emit_change(args, done, *labels(done))
     return EXIT_OK
+
+
+def cmd_tx_set_category(args: argparse.Namespace) -> int:
+    return _change(args, lambda c, apply: service.set_transaction_category(c, args.txn_id, args.category,
+                                                                           apply=apply),
+                   lambda d: ("Category", (d["before"]["category"] or {}).get("name") or "(none)",
+                              d["after"]["category"]["name"] or ""))
 
 
 def cmd_tx_tag(args: argparse.Namespace) -> int:
     if not args.add and not args.remove:
         print("monarch: give at least one --add or --remove", file=sys.stderr)
         return EXIT_USAGE
-    d = asyncio.run(service.update_transaction_tags(service.client(allow_writes=args.yes), args.txn_id,
-                                                    args.add, args.remove, apply=args.yes))
-    _emit_change(args, d, "Tags", _names(d["before"]["tags"]), _names(d["after"]["tags"]))
-    return EXIT_OK
+    return _change(args, lambda c, apply: service.update_transaction_tags(c, args.txn_id, args.add, args.remove,
+                                                                          apply=apply),
+                   lambda d: ("Tags", _names(d["before"]["tags"]), _names(d["after"]["tags"])))
 
 
 def _rate(v: float | None) -> str:
@@ -708,8 +752,10 @@ def build_tx_write_parser(prog: str = "monarch tx") -> argparse.ArgumentParser:
     common = _common()
     yes = argparse.ArgumentParser(add_help=False)
     yes.add_argument("txn_id", metavar="TXN_ID", help="transaction id (see `monarch tx --json`)")
-    yes.add_argument("--yes", action="store_true", help="make the change (default: preview only; nothing is changed)")
-    p = argparse.ArgumentParser(prog=prog, description="Change one transaction. Previews unless --yes is given.")
+    yes.add_argument("--yes", action="store_true",
+                     help="apply without asking (default: preview, then ask on a terminal; preview only otherwise)")
+    p = argparse.ArgumentParser(prog=prog, description="Change one transaction. Shows the change first and, on a "
+                                "terminal, asks before applying it; --yes applies without asking.")
     sub = p.add_subparsers(dest="tx_command", required=True, metavar="ACTION")
     sc = sub.add_parser("set-category", parents=[common, yes], help="set a transaction's category")
     sc.add_argument("--category", required=True, metavar="NAME|ID", help="see `monarch categories`")
@@ -730,8 +776,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = argparse.ArgumentParser(
         prog="monarch",
-        description="Unofficial CLI and MCP server for Monarch Money: read-only unless you pass --yes to a "
-                    "tx set-category or tx tag command. Not affiliated with Monarch Money.",
+        description="Unofficial CLI and MCP server for Monarch Money: read-only unless you confirm a "
+                    "tx set-category or tx tag change (or pass --yes). Not affiliated with Monarch Money.",
         epilog="examples:\n"
                "  monarch auth\n"
                "  monarch accounts list\n"
@@ -748,8 +794,8 @@ def build_parser() -> argparse.ArgumentParser:
                "  monarch recurring\n"
                "  monarch networth --ytd\n"
                "  monarch categories\n"
-               "  monarch tx set-category 123456 --category Groceries       (preview; add --yes to apply)\n"
-               "  monarch tx tag 123456 --add Business --remove Personal    (preview; add --yes to apply)\n"
+               "  monarch tx set-category 123456 --category Groceries       (asks before applying)\n"
+               "  monarch tx tag 123456 --add Business --remove Personal    (asks before applying)\n"
                "\n"
                "something not working? run: monarch doctor",
         formatter_class=argparse.RawDescriptionHelpFormatter,
