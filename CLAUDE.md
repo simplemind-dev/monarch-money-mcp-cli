@@ -38,7 +38,7 @@ Four layers in `src/monarch_money_cli/`, data flowing `client.py` → `service.p
 - `cli.py`: argparse subcommands calling service functions via `asyncio.run`. `cmd_doctor` never imports `mcp`; it checks a live MCP handshake against tool names parsed from `mcp_server.py` source. `_csv_cell` guards CSV output against formula injection.
 - `mcp_server.py`: `MCPServer` tools, read-only annotations, pydantic-validated args, stdio only. Never write to stdout here: it's the MCP transport; log to stderr. Write tools are added by `enable_writes()` (`monarch mcp --allow-writes`) via `mcp.add_tool`, so doctor's `@mcp.tool` scan sees only reads.
 
-Writes preview unless the CLI gets `--yes` or the MCP tool gets `apply=true`. `monarch tx set-category|tag` use their own parser (`build_tx_write_parser`), routed in `main()`, because `tx` takes positional dates.
+Writes show the change first, then need confirmation: the CLI asks `[y/N]` on a terminal (`cli._confirm`; `--yes` skips it, non-TTY only previews), and MCP `apply=true` asks through elicitation (resolvers `Resolve`/`Elicit`) and writes nothing if the client can't ask. `monarch tx set-category|tag` use their own parser (`build_tx_write_parser`), routed in `main()`, because `tx` takes positional dates.
 
 To add a data command: add the query/method in `client.py`, a trimming function in `service.py`, wire both `cli.py` and `mcp_server.py`, and extend `tests/_mock.py`.
 

@@ -24,10 +24,11 @@ the query text, and the exact input keys before any request, and refuses all mut
 
 | Mutation | What it does | Why it's allowed | Gate |
 |---|---|---|---|
-| `Web_TransactionDrawerUpdateTransaction` | Sets one transaction's category to an existing category. | Fix miscategorised transactions. | `monarch tx set-category ... --yes`, or `monarch_set_transaction_category` with `apply=true` on a server started with `monarch mcp --allow-writes`. |
-| `Web_SetTransactionTags` | Replaces one transaction's tags with existing tags. | Tag transactions for reporting. | `monarch tx tag ... --yes`, or `monarch_update_transaction_tags` with `apply=true` on a server started with `monarch mcp --allow-writes`. |
+| `Web_TransactionDrawerUpdateTransaction` | Sets one transaction's category to an existing category. | Fix miscategorised transactions. | `monarch tx set-category`: the user answers `y` at the terminal prompt, or passes `--yes`. MCP: `monarch_set_transaction_category` with `apply=true` on a server started with `monarch mcp --allow-writes`, and the user accepts the confirmation. |
+| `Web_SetTransactionTags` | Replaces one transaction's tags with existing tags. | Tag transactions for reporting. | `monarch tx tag`: the user answers `y` at the terminal prompt, or passes `--yes`. MCP: `monarch_update_transaction_tags` with `apply=true` on a server started with `monarch mcp --allow-writes`, and the user accepts the confirmation. |
 
-Without `--yes` or `apply=true`, both preview the change and send no mutation.
+Every write shows the change first. Without a terminal and without `--yes`, the CLI only previews. The MCP server
+asks for confirmation through MCP elicitation; if the client can't show it, or the user declines, nothing is sent.
 
 ## Known limitations
 

@@ -4,10 +4,10 @@
 
 - Writes behind a mutation allowlist (`client.ALLOWED_MUTATIONS`); anything not listed is refused before any request.
 - `monarch tx set-category TXN_ID --category NAME|ID` and `monarch tx tag TXN_ID --add/--remove NAME`:
-  preview by default, change data only with `--yes`.
+  show the change and ask to confirm on a terminal (`--yes` skips the prompt); preview only otherwise.
 - `monarch categories`, and the read-only MCP tool `monarch_list_categories`.
 - `monarch mcp --allow-writes` adds `monarch_set_transaction_category` and `monarch_update_transaction_tags`
-  (preview unless `apply=true`).
+  (preview unless `apply=true`, which asks the user to confirm through MCP elicitation).
 
 ## 0.1.2 (2026-10-01)
 
