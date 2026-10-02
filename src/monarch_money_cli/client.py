@@ -1,14 +1,16 @@
 """Minimal Monarch Money client. Standard library only.
 
 Talks to Monarch's private (reverse-engineered) API: POST /auth/login/ for a
-session token, POST /graphql for reads. Contains only the read queries
-this server needs. No write mutations exist in this file.
+session token, POST /graphql for reads. The only writes are the mutations in
+ALLOWED_MUTATIONS, sent only by a client built with allow_writes=True.
 """
 import asyncio
 import json
+import re
 import ssl
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from typing import Any
 
 from monarch_money_cli import __version__
@@ -241,6 +243,95 @@ query GetAggregateSnapshots($filters: AggregateSnapshotFilters) {
   aggregateSnapshots(filters: $filters) { date balance }
 }"""
 
+Q_CATEGORIES = """
+query GetCategories {
+  categories { id name isDisabled group { name type } }
+}"""
+
+# One transaction's current state, read before a write. Never select notes.
+Q_TRANSACTION = """
+query GetTransactionDrawer($id: UUID!) {
+  getTransaction(id: $id) {
+    id date amount
+    merchant { name }
+    category { id name }
+    tags { id name }
+  }
+}"""
+
+
+# ---------- GraphQL writes ----------
+
+@dataclass(frozen=True)
+class Mutation:
+    does: str  # one sentence: what it changes
+    why: str  # one sentence: why the package is allowed to send it
+    input_keys: frozenset[str]  # exact keys of variables["input"]
+
+
+# The only mutations this package may send. Anything not listed is refused before any HTTP call.
+# Adding an entry requires a `does`, a `why`, a SECURITY.md row, and tests.
+ALLOWED_MUTATIONS: dict[str, Mutation] = {
+    "Web_TransactionDrawerUpdateTransaction": Mutation(
+        does="Set one transaction's category to an existing category.",
+        why="Fix miscategorised transactions.",
+        input_keys=frozenset({"id", "category"})),
+    "Web_SetTransactionTags": Mutation(
+        does="Replace one transaction's tags with existing tags.",
+        why="Tag transactions for reporting.",
+        input_keys=frozenset({"transactionId", "tagIds"})),
+}
+
+M_SET_CATEGORY = """
+mutation Web_TransactionDrawerUpdateTransaction($input: UpdateTransactionMutationInput!) {
+  updateTransaction(input: $input) {
+    transaction { id category { id name } }
+    errors { message code fieldErrors { field messages } }
+  }
+}"""
+
+# Replaces the transaction's full tag list.
+M_SET_TAGS = """
+mutation Web_SetTransactionTags($input: SetTransactionTagsInput!) {
+  setTransactionTags(input: $input) {
+    transaction { id tags { id name } }
+    errors { message code fieldErrors { field messages } }
+  }
+}"""
+
+_MUTATION_WORD = re.compile(r"\bmutation\b")
+_OPERATION_WORD = re.compile(r"\b(?:query|mutation|subscription)\b")
+
+
+def _check_mutation(op: str, query: str, variables: dict[str, Any]) -> None:
+    """Raise MonarchError unless this exact mutation is allowed. Runs before any HTTP call."""
+    allowed = ALLOWED_MUTATIONS.get(op)
+    if allowed is None:
+        raise MonarchError(f"Refusing {op!r}: it isn't in the mutation allowlist.")
+    if (len(_OPERATION_WORD.findall(query)) != 1
+            or not re.match(rf"\s*mutation\s+{re.escape(op)}\s*[({{]", query)):
+        raise MonarchError(f"Refusing {op!r}: the query text isn't that single mutation.")
+    inp = variables.get("input")
+    if set(variables) != {"input"} or not isinstance(inp, dict) or set(inp) != allowed.input_keys:
+        raise MonarchError(f"Refusing {op!r}: its input must have exactly {sorted(allowed.input_keys)}.")
+
+
+def _payload_errors(data: dict[str, Any]) -> str | None:
+    """Messages from a mutation payload's `errors` field, or None when it reports none."""
+    msgs = []
+    for payload in data.values():
+        errs = payload.get("errors") if isinstance(payload, dict) else None
+        for e in errs if isinstance(errs, list) else [errs] if errs else []:
+            if not isinstance(e, dict):
+                msgs.append(str(e))
+                continue
+            fields = [f"{f.get('field')}: {', '.join(map(str, f.get('messages') or []))}"
+                      for f in e.get("fieldErrors") or [] if isinstance(f, dict)]
+            parts = [str(p) for p in (e.get("message"), e.get("code"), *fields) if p]
+            if parts:  # an errors object with every field empty means no error
+                msgs.append("; ".join(parts))
+    return "; ".join(msgs[:3]) or None
+
 
 def _filters(start_date: str, end_date: str, search: str = "", accounts: list[str] | None = None,
              entity_set: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -252,12 +343,30 @@ def _filters(start_date: str, end_date: str, search: str = "", accounts: list[st
 
 
 class MonarchClient:
-    def __init__(self, token: str, timeout: int = 20) -> None:
+    def __init__(self, token: str, timeout: int = 20, allow_writes: bool = False) -> None:
         self._token = token
         self._timeout = timeout
+        self._allow_writes = allow_writes
 
     async def _gql(self, operation: str, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
-        body = {"operationName": operation, "query": query, "variables": variables or {}}
+        """Reads only: refuses any query text containing a mutation."""
+        if _MUTATION_WORD.search(query):
+            raise MonarchError(f"Refusing {operation!r}: mutations go through _mutate, not _gql.")
+        return await self._send(operation, query, variables or {})
+
+    async def _mutate(self, operation: str, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        """Send one allowlisted mutation. Refused unless the client was built with allow_writes=True."""
+        if not self._allow_writes:
+            raise MonarchError("Writes are off: this client was not built with allow_writes=True.")
+        _check_mutation(operation, query, variables)
+        data = await self._send(operation, query, variables)
+        err = _payload_errors(data)
+        if err:
+            raise MonarchError(f"Monarch refused the change: {err}")
+        return data
+
+    async def _send(self, operation: str, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        body = {"operationName": operation, "query": query, "variables": variables}
         status, data = await asyncio.to_thread(_post, "/graphql", body, self._token, self._timeout)
         if status in (401, 403):
             raise AuthRequired("Monarch session expired or revoked.")
@@ -314,3 +423,17 @@ class MonarchClient:
     async def net_worth(self, start_date: str, end_date: str) -> dict[str, Any]:
         return await self._gql("GetAggregateSnapshots", Q_NET_WORTH,
                                {"filters": {"startDate": start_date, "endDate": end_date}})
+
+    async def categories(self) -> dict[str, Any]:
+        return await self._gql("GetCategories", Q_CATEGORIES)
+
+    async def transaction(self, txn_id: str) -> dict[str, Any]:
+        return await self._gql("GetTransactionDrawer", Q_TRANSACTION, {"id": txn_id})
+
+    async def set_transaction_category(self, txn_id: str, category_id: str) -> dict[str, Any]:
+        return await self._mutate("Web_TransactionDrawerUpdateTransaction", M_SET_CATEGORY,
+                                  {"input": {"id": txn_id, "category": category_id}})
+
+    async def set_transaction_tags(self, txn_id: str, tag_ids: list[str]) -> dict[str, Any]:
+        return await self._mutate("Web_SetTransactionTags", M_SET_TAGS,
+                                  {"input": {"transactionId": txn_id, "tagIds": list(tag_ids)}})
