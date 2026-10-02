@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Unofficial, **read-only** CLI (`monarch`) and optional MCP server for Monarch Money, distributed as `monarch-money-mcp-cli` (repo `simplemind-dev/monarch-money-mcp-cli`; Python module still `monarch_money_cli`). Calls Monarch's private GraphQL API at `api.monarch.com`, which may change without notice. Session token lives in the macOS Keychain. Python 3.11+.
+Unofficial, **read-only by default** CLI (`monarch`) and optional MCP server for Monarch Money, distributed as `monarch-money-mcp-cli` (repo `simplemind-dev/monarch-money-mcp-cli`; Python module still `monarch_money_cli`). Calls Monarch's private GraphQL API at `api.monarch.com`, which may change without notice. Session token lives in the macOS Keychain. Python 3.11+.
 
 ## Commands
 
@@ -23,7 +23,7 @@ No linter/formatter config; tests use `unittest`, not pytest. CI (`.github/workf
 ## Hard rules (from CONTRIBUTING.md / SECURITY.md, several enforced by tests)
 
 1. **Stdlib only in the core.** `tests/test_security.py` scans core-module imports; only `mcp_server.py` may import `mcp`/`pydantic`, and `cli.cmd_mcp` imports it lazily with an install hint on `ImportError`. Never add dependencies.
-2. **Read-only.** No GraphQL `mutation` — a test greps `client.py` for the word.
+2. **Read-only except `client.ALLOWED_MUTATIONS`.** Never add an entry without its `does`/`why`, a SECURITY.md row, and tests.
 3. **Fixed host.** `client.BASE_URL` is hard-coded HTTPS; `client.py` must not read `os.environ`/`getenv` (test-enforced). Don't add proxy settings or a configurable host/URL.
 4. **Network hardening (`client._OPENER`):** an empty `ProxyHandler` ignores proxy env vars, `_NoRedirect` stops the auth header being forwarded, and `MAX_RESPONSE_BYTES` caps responses at 5 MB.
 5. **Keychain:** the token is written via `/usr/bin/security -i` through **stdin**, never argv, and validated against `_TOKEN_RE`. No plaintext fallback off macOS. `keychain.SERVICE` must never change: it would orphan stored tokens (test-pinned).
@@ -33,16 +33,18 @@ No linter/formatter config; tests use `unittest`, not pytest. CI (`.github/workf
 
 Four layers in `src/monarch_money_cli/`, data flowing `client.py` → `service.py` → `cli.py`/`mcp_server.py`:
 
-- `client.py`: transport. Sync `_post` (urllib), wrapped by async `MonarchClient._gql` via `asyncio.to_thread`. Maps 401/403 to `AuthRequired`, other failures to `MonarchError`; `login()` raises `MFARequired`/`CaptchaRequired`. GraphQL query strings (`Q_*`) live here.
+- `client.py`: transport. Sync `_post` (urllib), wrapped by async `MonarchClient._gql` via `asyncio.to_thread`. Maps 401/403 to `AuthRequired`, other failures to `MonarchError`; `login()` raises `MFARequired`/`CaptchaRequired`. GraphQL query strings (`Q_*`) live here. Mutations (`M_*`) go only through `_mutate`, which needs `allow_writes=True` and checks name, query text, and input keys before any request; `_gql` refuses them.
 - `service.py`: shared by CLI and MCP. Loads the token from Keychain, resolves date ranges and `--entity` scopes, returns trimmed dicts paginated at `MAX_PAGE = 100`. `resolve_entities` turns `--entity` values (id, name/prefix, or `household`) into a scope; `entity_set()` builds `BusinessEntitySetInput`, where `includeUnassigned` is required so it's always sent.
 - `cli.py`: argparse subcommands calling service functions via `asyncio.run`. `cmd_doctor` never imports `mcp`; it checks a live MCP handshake against tool names parsed from `mcp_server.py` source. `_csv_cell` guards CSV output against formula injection.
-- `mcp_server.py`: `MCPServer` tools, read-only annotations, pydantic-validated args, stdio only. Never write to stdout here: it's the MCP transport; log to stderr.
+- `mcp_server.py`: `MCPServer` tools, read-only annotations, pydantic-validated args, stdio only. Never write to stdout here: it's the MCP transport; log to stderr. Write tools are added by `enable_writes()` (`monarch mcp --allow-writes`) via `mcp.add_tool`, so doctor's `@mcp.tool` scan sees only reads.
+
+Writes preview unless the CLI gets `--yes` or the MCP tool gets `apply=true`. `monarch tx set-category|tag` use their own parser (`build_tx_write_parser`), routed in `main()`, because `tx` takes positional dates.
 
 To add a data command: add the query/method in `client.py`, a trimming function in `service.py`, wire both `cli.py` and `mcp_server.py`, and extend `tests/_mock.py`.
 
 ## Tests
 
-`tests/_mock.py::MockMonarch` runs a local `HTTPServer`, monkeypatching `client.BASE_URL` and `client._OPENER` (plain HTTP, same hardening). It dispatches on the GraphQL `operationName`; a new operation needs an entry in its `data` dict. `tests/test_doctor_mcp.py` spawns the real MCP server for the handshake and feeds `_check_mcp_clients` temporary config files. Tests never contact the real API; Keychain calls are mocked. The real-Keychain round-trip test is opt-in:
+`tests/_mock.py::MockMonarch` runs a local `HTTPServer`, monkeypatching `client.BASE_URL` and `client._OPENER` (plain HTTP, same hardening). It dispatches on the GraphQL `operationName`; a new operation needs an entry in its `data` dict (mutations: `writes`), and `m.mutations()` lists the mutations it received. `tests/test_doctor_mcp.py` spawns the real MCP server for the handshake and feeds `_check_mcp_clients` temporary config files. Tests never contact the real API; Keychain calls are mocked. The real-Keychain round-trip test is opt-in:
 
 ```bash
 MONARCH_KEYCHAIN_TEST=1 uv run --no-project -- python -m unittest tests.test_security -v   # macOS only
