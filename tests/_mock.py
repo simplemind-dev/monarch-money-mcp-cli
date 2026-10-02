@@ -120,11 +120,30 @@ NET_WORTH = {"aggregateSnapshots": [
     {"date": "2026-09-10", "balance": 104500.5},
 ]}
 
+# Placeholder categories: "Dining" twice (ambiguous by name) and one disabled.
+CATEGORIES = {"categories": [
+    {"id": "201", "name": "Paycheck", "isDisabled": False, "group": {"name": "Income", "type": "income"}},
+    {"id": "202", "name": "Groceries", "isDisabled": False, "group": {"name": "Food", "type": "expense"}},
+    {"id": "203", "name": "Restaurants", "isDisabled": False, "group": {"name": "Food", "type": "expense"}},
+    {"id": "204", "name": "Dining", "isDisabled": False, "group": {"name": "Food", "type": "expense"}},
+    {"id": "205", "name": "dining", "isDisabled": False, "group": {"name": "Travel", "type": "expense"}},
+    {"id": "206", "name": "Old stuff", "isDisabled": True, "group": {"name": "Food", "type": "expense"}},
+]}
+# One transaction for GetTransactionDrawer. notes is here only to prove it's never returned.
+TRANSACTION = {"id": "301", "date": "2026-09-02", "amount": -42.1, "notes": "secret note",
+               "merchant": {"name": "King Soopers"}, "category": {"id": "202", "name": "Groceries"},
+               "tags": [{"id": "g1", "name": "Business"}]}
+
+
+def is_mutation(request: dict) -> bool:
+    return str(request["body"].get("query", "")).lstrip().startswith("mutation")
+
 
 class MockMonarch:
     def __init__(self) -> None:
         self.requests: list[dict] = []
         self.force_status: int | None = None  # set to 502/503/504/429 to simulate an upstream outage
+        self.payload_errors: dict | None = None  # set to make mutations return a PayloadError
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -151,11 +170,18 @@ class MockMonarch:
                     self.end_headers()
                     return
                 op = body.get("operationName")
+                if op in outer.writes:
+                    self._json({"data": outer.writes[op](body.get("variables") or {})})
+                    return
+                if op == "GetTransactionDrawer":
+                    found = (body.get("variables") or {}).get("id") == TRANSACTION["id"]
+                    self._json({"data": {"getTransaction": TRANSACTION if found else None}})
+                    return
                 data = {"GetAccounts": ACCOUNTS, "GetTransactionsList": TXNS, "GetHouseholdTransactionTags": TAGS, "Web_GetCashFlowPage": CASHFLOW,
                         "Common_GetBusinessEntities": ENTITIES,
                         "Web_GetBusinessEntitySummaries": ENTITY_SUMMARIES, "GetJointPlanningData": PLANNING,
                         "Web_GetUpcomingRecurringTransactionItems": RECURRING, "Web_GetHoldings": HOLDINGS,
-                        "GetAggregateSnapshots": NET_WORTH}[op]
+                        "GetAggregateSnapshots": NET_WORTH, "GetCategories": CATEGORIES}[op]
                 self._json({"data": data})
 
             def _json(self, obj):
@@ -167,6 +193,25 @@ class MockMonarch:
                 self.wfile.write(raw)
 
         self.server = HTTPServer(("127.0.0.1", 0), Handler)
+
+        def set_category(v: dict) -> dict:
+            inp = v["input"]
+            cat = next((c for c in CATEGORIES["categories"] if c["id"] == inp["category"]), None)
+            return {"updateTransaction": {
+                "transaction": {"id": inp["id"], "category": cat and {"id": cat["id"], "name": cat["name"]}},
+                "errors": self.payload_errors}}
+
+        def set_tags(v: dict) -> dict:
+            inp = v["input"]
+            tags = [t for i in inp["tagIds"] for t in TAGS["householdTransactionTags"] if t["id"] == i]
+            return {"setTransactionTags": {"transaction": {"id": inp["transactionId"], "tags": tags},
+                                           "errors": self.payload_errors}}
+
+        self.writes = {"Web_TransactionDrawerUpdateTransaction": set_category, "Web_SetTransactionTags": set_tags}
+
+    def mutations(self) -> list[dict]:
+        """Request bodies of every mutation the mock received."""
+        return [r["body"] for r in self.requests if is_mutation(r)]
 
     def __enter__(self):
         threading.Thread(target=self.server.serve_forever, daemon=True).start()

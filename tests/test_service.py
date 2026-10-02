@@ -4,7 +4,7 @@ from datetime import date
 from unittest import mock
 
 from monarch_money_cli import service
-from monarch_money_cli.client import AuthRequired, MonarchClient
+from monarch_money_cli.client import AuthRequired, MonarchClient, MonarchError
 from tests._mock import ACCOUNTS, TOKEN, MockMonarch
 
 
@@ -298,3 +298,120 @@ class PlanningAndInvestments(unittest.TestCase):
             self.assertEqual((d["start_net_worth"], d["change"]), (101000, 3500.5))
             d = self.run_(service.net_worth(c, "2026-07-01", "2026-09-30", daily=True))
             self.assertEqual((len(d["points"]), d["change"]), (5, 4500.5))
+
+
+class Writes(unittest.TestCase):
+    def run_(self, coro):
+        return asyncio.run(coro)
+
+    def writer(self):
+        return MonarchClient(TOKEN, allow_writes=True)
+
+    def test_categories_trimmed(self):
+        with MockMonarch():
+            d = self.run_(service.categories(MonarchClient(TOKEN)))
+        self.assertEqual(d["count"], 6)
+        self.assertEqual(d["categories"][0], {"id": "204", "name": "Dining", "group": "Food",
+                                              "group_type": "expense", "disabled": False})
+        self.assertEqual(d["categories"][-1]["name"], "Paycheck")  # expense groups sort before income
+
+    def test_resolve_category(self):
+        with MockMonarch():
+            c = MonarchClient(TOKEN)
+            self.assertEqual(self.run_(service.resolve_category(c, "203"))["name"], "Restaurants")
+            self.assertEqual(self.run_(service.resolve_category(c, " restaurants "))["id"], "203")
+            for spec, msg in (("Restaur", "Unknown category"), ("DINING", "ambiguous"), ("Old stuff", "disabled")):
+                with self.assertRaises(ValueError, msg=spec) as cm:
+                    self.run_(service.resolve_category(c, spec))
+                self.assertIn(msg, str(cm.exception))
+
+    def test_set_category_preview_sends_no_mutation(self):
+        with MockMonarch() as m:
+            d = self.run_(service.set_transaction_category(MonarchClient(TOKEN), "301", "Restaurants"))
+        self.assertEqual(m.mutations(), [])
+        self.assertEqual((d["changed"], d["applied"]), (True, False))
+        self.assertEqual(d["before"]["category"], {"id": "202", "name": "Groceries"})
+        self.assertEqual(d["after"]["category"], {"id": "203", "name": "Restaurants"})
+        self.assertEqual(d["transaction"], {"id": "301", "date": "2026-09-02", "amount": -42.1,
+                                            "merchant": "King Soopers"})
+        self.assertNotIn("secret note", str(d))
+
+    def test_set_category_apply_sends_one_mutation(self):
+        with MockMonarch() as m:
+            d = self.run_(service.set_transaction_category(self.writer(), "301", "restaurants", apply=True))
+        self.assertEqual([b["variables"] for b in m.mutations()], [{"input": {"id": "301", "category": "203"}}])
+        self.assertEqual((d["changed"], d["applied"]), (True, True))
+        self.assertEqual(d["after"]["category"], {"id": "203", "name": "Restaurants"})
+
+    def test_set_category_no_change_skips_mutation(self):
+        with MockMonarch() as m:
+            d = self.run_(service.set_transaction_category(self.writer(), "301", "Groceries", apply=True))
+        self.assertEqual(m.mutations(), [])
+        self.assertEqual((d["changed"], d["applied"]), (False, False))
+        self.assertIn("nothing to change", d["message"])
+
+    def test_apply_needs_a_write_client(self):
+        with MockMonarch() as m, self.assertRaises(MonarchError):
+            self.run_(service.set_transaction_category(MonarchClient(TOKEN), "301", "Restaurants", apply=True))
+        self.assertEqual(m.mutations(), [])
+
+    def test_invalid_and_missing_transaction(self):
+        with MockMonarch() as m:
+            for bad in ("abc", "1; drop", "", "1" * 31, "-1"):
+                with self.assertRaises(ValueError, msg=bad):
+                    self.run_(service.set_transaction_category(self.writer(), bad, "Restaurants", apply=True))
+            self.assertEqual(m.requests, [])
+            with self.assertRaises(ValueError) as cm:
+                self.run_(service.update_transaction_tags(self.writer(), "999", add=["Supplies"], apply=True))
+            self.assertIn("not found", str(cm.exception))
+            self.assertEqual(m.mutations(), [])
+
+    def test_payload_errors_fail_the_write(self):
+        with MockMonarch() as m:
+            m.payload_errors = {"message": "Transaction is locked", "code": "LOCKED", "fieldErrors": []}
+            with self.assertRaises(MonarchError) as cm:
+                self.run_(service.set_transaction_category(self.writer(), "301", "Restaurants", apply=True))
+        self.assertIn("Transaction is locked", str(cm.exception))
+
+    def test_tags_merge_add_and_remove(self):
+        with MockMonarch() as m:
+            d = self.run_(service.update_transaction_tags(self.writer(), "301", add=["supplies"],
+                                                          remove=["BUSINESS"], apply=True))
+        self.assertEqual([b["variables"] for b in m.mutations()],
+                         [{"input": {"transactionId": "301", "tagIds": ["g2"]}}])
+        self.assertEqual(d["before"]["tags"], [{"id": "g1", "name": "Business"}])
+        self.assertEqual(d["after"]["tags"], [{"id": "g2", "name": "Supplies"}])
+        self.assertEqual((d["added"], d["removed"]), ([{"id": "g2", "name": "Supplies"}],
+                                                      [{"id": "g1", "name": "Business"}]))
+        self.assertTrue(d["applied"])
+
+    def test_tags_add_keeps_existing(self):
+        with MockMonarch() as m:
+            d = self.run_(service.update_transaction_tags(MonarchClient(TOKEN), "301", add=["g2"]))
+        self.assertEqual(m.mutations(), [])  # preview
+        self.assertEqual([t["id"] for t in d["after"]["tags"]], ["g1", "g2"])
+        self.assertEqual((d["changed"], d["applied"]), (True, False))
+
+    def test_tags_no_change_skips_mutation(self):
+        with MockMonarch() as m:
+            d = self.run_(service.update_transaction_tags(self.writer(), "301", add=["Business"], apply=True))
+            self.assertFalse(d["changed"])
+            d = self.run_(service.update_transaction_tags(self.writer(), "301", remove=["Supplies"], apply=True))
+            self.assertFalse(d["changed"])
+        self.assertEqual(m.mutations(), [])
+
+    def test_tags_bad_input(self):
+        with MockMonarch() as m:
+            for kw, msg in (({}, "at least one"), ({"add": ["Nope"]}, "Unknown tag"),
+                            ({"add": ["Business"], "remove": ["business"]}, "same tag")):
+                with self.assertRaises(ValueError, msg=kw) as cm:
+                    self.run_(service.update_transaction_tags(self.writer(), "301", apply=True, **kw))
+                self.assertIn(msg, str(cm.exception))
+        self.assertEqual(m.mutations(), [])
+
+    def test_ambiguous_name_needs_id(self):
+        items = [{"id": "g1", "name": "Work"}, {"id": "g9", "name": "work"}]
+        with self.assertRaises(ValueError) as cm:
+            service._pick("tag", items, "WORK", "")
+        self.assertIn("ambiguous", str(cm.exception))
+        self.assertEqual(service._pick("tag", items, "g9", "")["name"], "work")

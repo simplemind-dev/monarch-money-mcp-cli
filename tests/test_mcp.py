@@ -12,6 +12,8 @@ except ImportError:  # [mcp] extra not installed
 from monarch_money_cli import keychain
 from tests._mock import TOKEN, MockMonarch
 
+WRITE_TOOLS = {"monarch_set_transaction_category", "monarch_update_transaction_tags"}
+
 
 @unittest.skipIf(mcp_server is None, "mcp extra not installed")
 class McpServer(unittest.TestCase):
@@ -22,7 +24,8 @@ class McpServer(unittest.TestCase):
                                                   "monarch_income_by_category", "monarch_list_entities",
                                                   "monarch_cashflow_by_entity", "monarch_budget_summary",
                                                   "monarch_list_goals", "monarch_list_recurring",
-                                                  "monarch_list_holdings", "monarch_net_worth_history"})
+                                                  "monarch_list_holdings", "monarch_net_worth_history",
+                                                  "monarch_list_categories"})
         for t in tools:
             self.assertTrue(t.annotations.read_only_hint, t.name)
             self.assertFalse(t.annotations.destructive_hint, t.name)
@@ -106,3 +109,63 @@ class McpServer(unittest.TestCase):
             with self.assertRaises(ToolError):
                 asyncio.run(mcp_server.mcp.call_tool("monarch_cashflow_summary", {
                     "start_date": "2026-09-01", "end_date": "2026-09-30", "entity_ids": ["Acme LLC"]}))
+
+    def test_list_categories(self):
+        with MockMonarch(), mock.patch.object(keychain, "load", return_value=TOKEN):
+            r = str(asyncio.run(mcp_server.mcp.call_tool("monarch_list_categories", {})))
+        self.assertIn("Restaurants", r)
+
+
+@unittest.skipIf(mcp_server is None, "mcp extra not installed")
+class McpWrites(unittest.TestCase):
+    def setUp(self):
+        mcp_server.enable_writes()
+        self.addCleanup(mcp_server.disable_writes)
+
+    def call(self, tool, args):
+        return asyncio.run(mcp_server.mcp.call_tool(tool, args))
+
+    def test_absent_by_default_present_when_enabled(self):
+        mcp_server.disable_writes()
+        names = {t.name for t in asyncio.run(mcp_server.mcp.list_tools())}
+        self.assertFalse(names & WRITE_TOOLS)
+        self.assertIn("monarch_list_categories", names)
+        mcp_server.enable_writes()
+        mcp_server.enable_writes()  # idempotent
+        tools = {t.name: t for t in asyncio.run(mcp_server.mcp.list_tools())}
+        self.assertLessEqual(WRITE_TOOLS, set(tools))
+        self.assertIn("monarch_list_categories", tools)
+        for name in WRITE_TOOLS:
+            a = tools[name].annotations
+            self.assertEqual((a.read_only_hint, a.destructive_hint, a.idempotent_hint), (False, False, True), name)
+
+    def test_run_registers_writes_only_when_asked(self):
+        mcp_server.disable_writes()
+        with mock.patch.object(mcp_server.mcp, "run"):
+            mcp_server.run()
+            self.assertFalse({t.name for t in asyncio.run(mcp_server.mcp.list_tools())} & WRITE_TOOLS)
+            mcp_server.run(allow_writes=True)
+        self.assertLessEqual(WRITE_TOOLS, {t.name for t in asyncio.run(mcp_server.mcp.list_tools())})
+
+    def test_preview_by_default_apply_sends_one_mutation(self):
+        with MockMonarch() as m, mock.patch.object(keychain, "load", return_value=TOKEN):
+            r = str(self.call("monarch_set_transaction_category", {"transaction_id": "301", "category": "Restaurants"}))
+            self.assertIn("Preview only", r)
+            self.assertEqual(m.mutations(), [])
+            self.call("monarch_set_transaction_category",
+                      {"transaction_id": "301", "category": "Restaurants", "apply": True})
+            self.call("monarch_update_transaction_tags",
+                      {"transaction_id": "301", "add": ["Supplies"], "apply": True})
+            self.assertEqual([b["variables"] for b in m.mutations()],
+                             [{"input": {"id": "301", "category": "203"}},
+                              {"input": {"transactionId": "301", "tagIds": ["g1", "g2"]}}])
+
+    def test_write_input_validation(self):
+        with MockMonarch() as m, mock.patch.object(keychain, "load", return_value=TOKEN):
+            for args in ({"transaction_id": "30x", "category": "Restaurants", "apply": True},
+                         {"transaction_id": "301", "category": "Nope", "apply": True}):
+                with self.assertRaises(ToolError):
+                    self.call("monarch_set_transaction_category", args)
+            with self.assertRaises(ToolError):
+                self.call("monarch_update_transaction_tags", {"transaction_id": "301", "apply": True})
+            self.assertEqual(m.mutations(), [])

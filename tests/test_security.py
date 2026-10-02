@@ -1,10 +1,13 @@
+import asyncio
 import inspect
 import os
 import re
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from monarch_money_cli import client, keychain
+from monarch_money_cli.client import MonarchClient, MonarchError
 from tests._mock import TOKEN, MockMonarch
 
 
@@ -12,9 +15,8 @@ class ClientHardening(unittest.TestCase):
     def test_host_is_fixed_https(self):
         self.assertEqual(client.BASE_URL, "https://api.monarch.com")
 
-    def test_client_has_no_mutations_or_env_access(self):
+    def test_client_has_no_env_access(self):
         src = inspect.getsource(client)
-        self.assertNotRegex(src, r"\bmutation\b")
         self.assertNotIn("os.environ", src)
         self.assertNotIn("getenv", src)
 
@@ -41,6 +43,100 @@ class ClientHardening(unittest.TestCase):
     def test_response_size_capped(self):
         with MockMonarch(), self.assertRaises(client.MonarchError):
             client._post("/huge", {}, TOKEN, 5)
+
+
+SET_CATEGORY = "Web_TransactionDrawerUpdateTransaction"
+SET_TAGS = "Web_SetTransactionTags"
+
+
+class MutationAllowlist(unittest.TestCase):
+    def test_every_mutation_in_client_is_allowlisted_and_every_entry_is_used(self):
+        src = inspect.getsource(client)
+        in_source = set(re.findall(r"\bmutation\s+([A-Za-z_]\w*)\s*[({]", src))
+        self.assertEqual(in_source, set(client.ALLOWED_MUTATIONS))
+        texts = [v for v in vars(client).values() if isinstance(v, str) and v.lstrip().startswith("mutation")]
+        self.assertEqual({re.match(r"\s*mutation\s+(\w+)", t).group(1) for t in texts}, set(client.ALLOWED_MUTATIONS))
+        for name in client.ALLOWED_MUTATIONS:
+            self.assertRegex(src, rf'_mutate\(\s*"{name}"', name)
+
+    def test_entries_explain_themselves(self):
+        self.assertTrue(client.ALLOWED_MUTATIONS)
+        for name, m in client.ALLOWED_MUTATIONS.items():
+            self.assertTrue(m.does.strip(), name)
+            self.assertTrue(m.why.strip(), name)
+            self.assertIsInstance(m.input_keys, frozenset, name)
+            self.assertTrue(m.input_keys, name)
+
+    def test_every_entry_is_in_security_md(self):
+        doc = (Path(__file__).resolve().parents[1] / "SECURITY.md").read_text()
+        for name in client.ALLOWED_MUTATIONS:
+            self.assertIn(name, doc)
+
+    def assertRefusedWithoutRequest(self, call):
+        with MockMonarch() as m:
+            with self.assertRaises(MonarchError):
+                asyncio.run(call())
+            self.assertEqual(m.requests, [])
+
+    def test_unlisted_mutation_refused(self):
+        c = MonarchClient(TOKEN, allow_writes=True)
+        q = "mutation Common_DeleteTransactionMutation($input: DeleteTransactionMutationInput!) { deleteTransaction(input: $input) { deleted } }"
+        self.assertRefusedWithoutRequest(lambda: c._mutate("Common_DeleteTransactionMutation", q, {"input": {"transactionId": "1"}}))
+
+    def test_wrong_input_keys_refused(self):
+        c = MonarchClient(TOKEN, allow_writes=True)
+        for variables in ({"input": {"id": "1", "category": "2", "notes": "x"}},  # extra key
+                          {"input": {"id": "1"}},  # missing key
+                          {"input": {"id": "1", "category": "2"}, "extra": 1},  # extra variable
+                          {"input": None}, {}):
+            self.assertRefusedWithoutRequest(lambda v=variables: c._mutate(SET_CATEGORY, client.M_SET_CATEGORY, v))
+        self.assertRefusedWithoutRequest(lambda: c._mutate(
+            SET_TAGS, client.M_SET_TAGS, {"input": {"transactionId": "1", "tagIds": [], "id": "1"}}))
+
+    def test_query_text_must_be_that_single_mutation(self):
+        c = MonarchClient(TOKEN, allow_writes=True)
+        tags_input = {"input": {"transactionId": "1", "tagIds": []}}
+        # Allowed name, but the text is a different mutation.
+        self.assertRefusedWithoutRequest(lambda: c._mutate(SET_TAGS, client.M_SET_CATEGORY, tags_input))
+        # A second operation smuggled into the document.
+        smuggled = client.M_SET_TAGS + "\nmutation Other($input: X!) { deleteTransaction(input: $input) { deleted } }"
+        self.assertRefusedWithoutRequest(lambda: c._mutate(SET_TAGS, smuggled, tags_input))
+        self.assertRefusedWithoutRequest(lambda: c._mutate(SET_TAGS, "query GetAccounts { accounts { id } }", tags_input))
+
+    def test_reads_refuse_mutations(self):
+        c = MonarchClient(TOKEN, allow_writes=True)
+        self.assertRefusedWithoutRequest(lambda: c._gql(SET_CATEGORY, client.M_SET_CATEGORY,
+                                                        {"input": {"id": "1", "category": "2"}}))
+        self.assertRefusedWithoutRequest(lambda: c._gql("GetAccounts", "{ accounts { id } } mutation X { y }"))
+
+    def test_writes_off_by_default(self):
+        c = MonarchClient(TOKEN)
+        self.assertRefusedWithoutRequest(lambda: c.set_transaction_category("1", "2"))
+        self.assertRefusedWithoutRequest(lambda: c.set_transaction_tags("1", ["g1"]))
+
+    def test_allowed_mutation_sends_one_request(self):
+        with MockMonarch() as m:
+            asyncio.run(MonarchClient(TOKEN, allow_writes=True).set_transaction_category("301", "203"))
+            asyncio.run(MonarchClient(TOKEN, allow_writes=True).set_transaction_tags("301", ["g2"]))
+            self.assertEqual([(b["operationName"], b["variables"]) for b in m.mutations()],
+                             [(SET_CATEGORY, {"input": {"id": "301", "category": "203"}}),
+                              (SET_TAGS, {"input": {"transactionId": "301", "tagIds": ["g2"]}})])
+            self.assertEqual(len(m.requests), 2)
+
+    def test_payload_errors_are_failures(self):
+        with MockMonarch() as m:
+            m.payload_errors = {"message": "Invalid category", "code": "BAD_INPUT",
+                                "fieldErrors": [{"field": "category", "messages": ["does not exist"]}]}
+            with self.assertRaises(MonarchError) as ctx:
+                asyncio.run(MonarchClient(TOKEN, allow_writes=True).set_transaction_category("301", "999"))
+        self.assertIn("Invalid category", str(ctx.exception))
+        self.assertIn("does not exist", str(ctx.exception))
+
+    def test_empty_payload_errors_are_not_failures(self):
+        self.assertIsNone(client._payload_errors({"x": {"errors": None}}))
+        self.assertIsNone(client._payload_errors({"x": {"errors": []}}))
+        self.assertIsNone(client._payload_errors({"x": {"errors": {"message": None, "code": None, "fieldErrors": []}}}))
+        self.assertEqual(client._payload_errors({"x": {"errors": [{"message": "nope"}]}}), "nope")
 
 
 class KeychainSafety(unittest.TestCase):

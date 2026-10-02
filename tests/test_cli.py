@@ -46,6 +46,19 @@ class Parser(unittest.TestCase):
         self.assertIs(self.parse("budget").func, cli.cmd_budgets)
         self.assertIs(self.parse("net-worth").func, cli.cmd_networth)
         self.assertEqual(self.parse("holdings", "--account", "3").account, ["3"])
+        self.assertIs(self.parse("categories").func, cli.cmd_categories_list)
+        self.assertFalse(self.parse("mcp").allow_writes)
+        self.assertTrue(self.parse("mcp", "--allow-writes").allow_writes)
+
+    def test_tx_write_shapes(self):
+        p = cli.build_tx_write_parser()
+        a = p.parse_args(["set-category", "301", "--category", "Groceries"])
+        self.assertEqual((a.func, a.txn_id, a.category, a.yes), (cli.cmd_tx_set_category, "301", "Groceries", False))
+        a = p.parse_args(["tag", "301", "--add", "a", "--add", "b", "--remove", "c", "--yes"])
+        self.assertEqual((a.func, a.add, a.remove, a.yes), (cli.cmd_tx_tag, ["a", "b"], ["c"], True))
+        # `tx` still takes positional dates.
+        a = self.parse("tx", "2026-09-01", "2026-09-30")
+        self.assertEqual((a.func, a.start, a.end), (cli.cmd_transactions, "2026-09-01", "2026-09-30"))
 
 
 @mock.patch.object(keychain, "load", return_value=TOKEN)
@@ -289,6 +302,78 @@ class Commands(unittest.TestCase):
     def test_new_commands_reject_entity(self, _):
         for cmd in ("budgets", "goals", "recurring", "holdings", "networth"):
             self.assertEqual(run(cmd, "--entity", "101")[0], cli.EXIT_USAGE, cmd)
+
+    def test_categories(self, _):
+        with MockMonarch():
+            code, out, _ = run("categories")
+            self.assertEqual(code, 0)
+            self.assertIn("Restaurants", out)
+            code, out, _ = run("categories", "--json")
+        self.assertEqual(json.loads(out)["count"], 6)
+
+    def test_tx_dates_and_days_still_list(self, _):
+        with MockMonarch() as m:
+            for argv in (("tx", "2026-09-01", "2026-09-30"), ("tx", "--days", "7"),
+                         ("transactions", "2026-09-01", "2026-09-30")):
+                code, out, _ = run(*argv)
+                self.assertEqual(code, 0, argv)
+                self.assertIn("King Soopers", out)
+        self.assertEqual(m.mutations(), [])
+
+    def test_set_category_preview_sends_no_mutation(self, _):
+        with MockMonarch() as m:
+            code, out, _ = run("tx", "set-category", "301", "--category", "restaurants")
+        self.assertEqual(code, 0)
+        self.assertIn("Groceries -> Restaurants", out)
+        self.assertIn("Re-run with --yes", out)
+        self.assertEqual(m.mutations(), [])
+
+    def test_set_category_yes_sends_one_mutation(self, _):
+        with MockMonarch() as m:
+            code, out, _ = run("transactions", "set-category", "301", "--category", "203", "--yes", "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual([b["variables"] for b in m.mutations()], [{"input": {"id": "301", "category": "203"}}])
+        d = json.loads(out)
+        self.assertTrue(d["applied"])
+        self.assertNotIn("secret note", out)
+
+    def test_set_category_errors_send_no_mutation(self, _):
+        with MockMonarch() as m:
+            code, _, err = run("tx", "set-category", "301", "--category", "Nope", "--yes")
+            self.assertEqual(code, cli.EXIT_ERROR)
+            self.assertIn("Unknown category", err)
+            code, _, err = run("tx", "set-category", "30x", "--category", "Restaurants", "--yes")
+            self.assertEqual(code, cli.EXIT_ERROR)
+            self.assertIn("Invalid transaction id", err)
+            code, _, _ = run("tx", "set-category", "301")  # --category is required
+            self.assertEqual(code, cli.EXIT_USAGE)
+        self.assertEqual(m.mutations(), [])
+
+    def test_tag_preview_and_yes(self, _):
+        with MockMonarch() as m:
+            code, out, _ = run("tx", "tag", "301", "--add", "Supplies")
+            self.assertEqual(code, 0)
+            self.assertIn("Business -> Business, Supplies", out)
+            self.assertEqual(m.mutations(), [])
+            code, out, _ = run("tx", "tag", "301", "--add", "Supplies", "--remove", "Business", "--yes")
+            self.assertEqual(code, 0)
+            self.assertEqual([b["variables"] for b in m.mutations()],
+                             [{"input": {"transactionId": "301", "tagIds": ["g2"]}}])
+
+    def test_tag_needs_add_or_remove(self, _):
+        with MockMonarch() as m:
+            code, _, err = run("tx", "tag", "301", "--yes")
+        self.assertEqual(code, cli.EXIT_USAGE)
+        self.assertIn("--add or --remove", err)
+        self.assertEqual(m.requests, [])
+
+    def test_mcp_allow_writes_is_passed_through(self, _):
+        fake = mock.Mock()
+        with mock.patch.dict("sys.modules", {"monarch_money_cli.mcp_server": fake}):
+            self.assertEqual(run("mcp")[0], 0)
+            fake.run.assert_called_with(allow_writes=False)
+            self.assertEqual(run("mcp", "--allow-writes")[0], 0)
+            fake.run.assert_called_with(allow_writes=True)
 
     def test_mcp_without_extra_shows_reinstall_hint(self, _):
         with mock.patch.dict("sys.modules", {"monarch_money_cli.mcp_server": None}):
