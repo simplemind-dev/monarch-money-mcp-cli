@@ -9,6 +9,7 @@ from datetime import date
 from unittest import mock
 
 from monarch_money_cli import cli, keychain, service
+from tests import _mock
 from tests._mock import TOKEN, MockMonarch
 
 
@@ -359,6 +360,64 @@ class Commands(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual([b["variables"] for b in m.mutations()],
                              [{"input": {"transactionId": "301", "tagIds": ["g2"]}}])
+
+    def prompt(self, *argv, answer="y", interactive=True):
+        """Run a write command as if on a terminal; `answer` is typed at the prompt (an exception is raised)."""
+        typed = mock.Mock(side_effect=answer if isinstance(answer, BaseException) else [answer])
+        with MockMonarch() as m, mock.patch.object(cli, "_interactive", return_value=interactive), \
+                mock.patch("builtins.input", typed):
+            code, out, err = run(*argv)
+        return code, out, err, m.mutations(), typed
+
+    def test_tty_prompt_yes_applies_once(self, _):
+        for answer in ("y", "YES", " Yes "):
+            code, out, _, sent, typed = self.prompt("tx", "set-category", "301", "--category", "Restaurants",
+                                                    answer=answer)
+            self.assertEqual(code, 0)
+            typed.assert_called_once_with("Apply this change? [y/N] ")
+            self.assertNotIn("Re-run with --yes", out)
+            self.assertIn("Category updated.", out)
+            self.assertEqual([b["variables"] for b in sent], [{"input": {"id": "301", "category": "203"}}])
+        code, _, _, sent, _ = self.prompt("tx", "tag", "301", "--add", "Supplies")
+        self.assertEqual([b["variables"] for b in sent], [{"input": {"transactionId": "301", "tagIds": ["g1", "g2"]}}])
+
+    def test_tty_prompt_anything_else_does_not_apply(self, _):
+        for answer in ("n", "", "no", "yep", EOFError(), KeyboardInterrupt()):
+            code, out, _, sent, typed = self.prompt("tx", "set-category", "301", "--category", "Restaurants",
+                                                    answer=answer)
+            self.assertEqual(code, 0, answer)
+            typed.assert_called_once()
+            self.assertIn("Not applied.", out)
+            self.assertEqual(sent, [], answer)
+
+    def test_no_prompt_when_not_a_terminal_or_with_yes_or_no_change(self, _):
+        code, out, _, sent, typed = self.prompt("tx", "set-category", "301", "--category", "Restaurants",
+                                                interactive=False)
+        self.assertEqual((code, sent), (0, []))
+        self.assertIn("Re-run with --yes", out)
+        typed.assert_not_called()
+        code, _, _, sent, typed = self.prompt("tx", "set-category", "301", "--category", "Restaurants", "--yes")
+        self.assertEqual((code, len(sent)), (0, 1))
+        typed.assert_not_called()
+        code, out, _, sent, typed = self.prompt("tx", "set-category", "301", "--category", "Groceries")
+        self.assertEqual((code, sent), (0, []))
+        self.assertIn("nothing to change", out)
+        typed.assert_not_called()
+
+    def test_tty_prompt_refuses_if_transaction_changed_meanwhile(self, _):
+        moved = {"id": "203", "name": "Restaurants"}
+
+        def answer(_question):
+            _mock.TRANSACTION["category"] = moved  # someone else changed it while we waited
+            return "y"
+
+        with mock.patch.dict(_mock.TRANSACTION, {}), MockMonarch() as m, \
+                mock.patch.object(cli, "_interactive", return_value=True), \
+                mock.patch("builtins.input", side_effect=answer):
+            code, _, err = run("tx", "set-category", "301", "--category", "Paycheck")
+        self.assertEqual(code, cli.EXIT_ERROR)
+        self.assertIn("changed since the preview", err)
+        self.assertEqual(m.mutations(), [])
 
     def test_tag_needs_add_or_remove(self, _):
         with MockMonarch() as m:

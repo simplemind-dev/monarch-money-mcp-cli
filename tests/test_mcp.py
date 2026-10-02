@@ -3,6 +3,7 @@ import unittest
 from unittest import mock
 
 try:
+    from mcp import Client, types
     from mcp.server.mcpserver.exceptions import ToolError
 
     from monarch_money_cli import mcp_server
@@ -137,7 +138,7 @@ class McpWrites(unittest.TestCase):
         self.assertIn("monarch_list_categories", tools)
         for name in WRITE_TOOLS:
             a = tools[name].annotations
-            self.assertEqual((a.read_only_hint, a.destructive_hint, a.idempotent_hint), (False, False, True), name)
+            self.assertEqual((a.read_only_hint, a.destructive_hint, a.idempotent_hint), (False, True, True), name)
 
     def test_run_registers_writes_only_when_asked(self):
         mcp_server.disable_writes()
@@ -147,18 +148,79 @@ class McpWrites(unittest.TestCase):
             mcp_server.run(allow_writes=True)
         self.assertLessEqual(WRITE_TOOLS, {t.name for t in asyncio.run(mcp_server.mcp.list_tools())})
 
-    def test_preview_by_default_apply_sends_one_mutation(self):
+    def client_call(self, tool, args, answer=None, mode="auto"):
+        """Call `tool` through an in-process MCP client. `answer` is the user's elicitation reply;
+        None means the client doesn't support elicitation. Returns (result dict, questions asked)."""
+        asked = []
+
+        async def elicit(_ctx, params):
+            asked.append(params.message)
+            return answer
+
+        async def go():
+            kw = {} if answer is None else {"elicitation_callback": elicit}
+            async with Client(mcp_server.mcp, mode=mode, **kw) as c:
+                return await c.call_tool(tool, args)
+
+        r = asyncio.run(go())
+        self.assertFalse(r.is_error, r)
+        return r.structured_content, asked
+
+    def test_preview_never_asks(self):
+        accept = types.ElicitResult(action="accept", content={"confirm": True})
         with MockMonarch() as m, mock.patch.object(keychain, "load", return_value=TOKEN):
-            r = str(self.call("monarch_set_transaction_category", {"transaction_id": "301", "category": "Restaurants"}))
-            self.assertIn("Preview only", r)
+            d, asked = self.client_call("monarch_set_transaction_category",
+                                        {"transaction_id": "301", "category": "Restaurants"}, accept)
+            self.assertEqual((asked, d["applied"]), ([], False))
+            self.assertIn("Preview only", d["message"])
+            # No change: nothing to confirm or send, even with apply=true.
+            d, asked = self.client_call("monarch_set_transaction_category",
+                                        {"transaction_id": "301", "category": "Groceries", "apply": True}, accept)
+            self.assertEqual((asked, d["changed"]), ([], False))
             self.assertEqual(m.mutations(), [])
+
+    def test_accept_applies_once(self):
+        accept = types.ElicitResult(action="accept", content={"confirm": True})
+        for mode in ("auto", "legacy"):  # 2026-07-28 input-required rounds, and mid-call elicitation
+            with MockMonarch() as m, mock.patch.object(keychain, "load", return_value=TOKEN):
+                d, asked = self.client_call("monarch_set_transaction_category",
+                                            {"transaction_id": "301", "category": "Restaurants", "apply": True},
+                                            accept, mode)
+                self.assertTrue(d["applied"], mode)
+                self.assertEqual(len(asked), 1, mode)
+                for part in ("2026-09-02", "King Soopers", "-42.10", "Groceries -> Restaurants"):
+                    self.assertIn(part, asked[0])
+                d, asked = self.client_call("monarch_update_transaction_tags",
+                                            {"transaction_id": "301", "add": ["Supplies"], "apply": True},
+                                            accept, mode)
+                self.assertTrue(d["applied"], mode)
+                self.assertIn("Business -> Business, Supplies", asked[0])
+                self.assertEqual([b["variables"] for b in m.mutations()],
+                                 [{"input": {"id": "301", "category": "203"}},
+                                  {"input": {"transactionId": "301", "tagIds": ["g1", "g2"]}}], mode)
+
+    def test_decline_cancel_or_unticked_do_not_apply(self):
+        for answer in (types.ElicitResult(action="decline"), types.ElicitResult(action="cancel"),
+                       types.ElicitResult(action="accept", content={"confirm": False})):
+            with MockMonarch() as m, mock.patch.object(keychain, "load", return_value=TOKEN):
+                d, asked = self.client_call("monarch_update_transaction_tags",
+                                            {"transaction_id": "301", "remove": ["Business"], "apply": True},
+                                            answer)
+                self.assertEqual(len(asked), 1)
+                self.assertEqual((d["applied"], d["message"]), (False, mcp_server.NOT_CONFIRMED))
+                self.assertEqual(m.mutations(), [], answer)
+
+    def test_client_without_elicitation_does_not_apply(self):
+        with MockMonarch() as m, mock.patch.object(keychain, "load", return_value=TOKEN):
+            d, _ = self.client_call("monarch_set_transaction_category",
+                                    {"transaction_id": "301", "category": "Restaurants", "apply": True})
+            self.assertFalse(d["applied"])
+            self.assertIn("can't show a confirmation", d["message"])
+            self.assertIn("monarch tx set-category 301", d["message"])
+            # A direct in-process call has no client to ask either.
             self.call("monarch_set_transaction_category",
                       {"transaction_id": "301", "category": "Restaurants", "apply": True})
-            self.call("monarch_update_transaction_tags",
-                      {"transaction_id": "301", "add": ["Supplies"], "apply": True})
-            self.assertEqual([b["variables"] for b in m.mutations()],
-                             [{"input": {"id": "301", "category": "203"}},
-                              {"input": {"transactionId": "301", "tagIds": ["g1", "g2"]}}])
+            self.assertEqual(m.mutations(), [])
 
     def test_write_input_validation(self):
         with MockMonarch() as m, mock.patch.object(keychain, "load", return_value=TOKEN):
