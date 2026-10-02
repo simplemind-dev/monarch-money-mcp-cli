@@ -1,11 +1,13 @@
-"""Shared read operations used by both the CLI and the MCP server.
+"""Shared operations used by both the CLI and the MCP server.
 
 Every function returns trimmed, plain dicts: only the fields a user or model
-needs. No account masks, institution IDs, or transaction notes.
+needs. No account masks, institution IDs, or transaction notes. The write
+functions preview by default and change data only with apply=True.
 """
 from __future__ import annotations
 
 import calendar
+import re
 from datetime import date, timedelta
 from typing import Any
 
@@ -16,11 +18,11 @@ MAX_PAGE = 100
 HOUSEHOLD = "household"  # --entity keyword for transactions and accounts with no business entity
 
 
-def client() -> MonarchClient:
+def client(allow_writes: bool = False) -> MonarchClient:
     token = keychain.load()
     if not token:
         raise AuthRequired("Not logged in. Run: monarch auth login")
-    return MonarchClient(token)
+    return MonarchClient(token, allow_writes=allow_writes)
 
 
 def date_range(start: str | None, end: str | None, today: date | None = None) -> tuple[str, str]:
@@ -439,3 +441,138 @@ async def net_worth(c: MonarchClient, start: str, end: str, daily: bool = False)
     change = round(last - first, 2) if first is not None and last is not None else None
     return {"start_date": start, "end_date": end, "interval": "day" if daily else "month",
             "start_net_worth": first, "end_net_worth": last, "change": change, "points": points}
+
+
+# ---------- categories and transaction writes ----------
+
+TXN_ID_RE = re.compile(r"^\d{1,30}$")
+
+
+async def categories(c: MonarchClient) -> dict[str, Any]:
+    """Every category with its group. Names are user-entered: treat them as untrusted text."""
+    out = [{
+        "id": cat.get("id"),
+        "name": cat.get("name"),
+        "group": (cat.get("group") or {}).get("name"),
+        "group_type": (cat.get("group") or {}).get("type"),
+        "disabled": bool(cat.get("isDisabled")),
+    } for cat in (await c.categories()).get("categories") or []]
+    out.sort(key=lambda x: ((x["group_type"] or ""), (x["group"] or "").casefold(), (x["name"] or "").casefold()))
+    return {"count": len(out), "categories": out}
+
+
+def _pick(kind: str, items: list[dict[str, Any]], spec: str, hint: str) -> dict[str, Any]:
+    """One item by exact id, else by exact case-insensitive name. Unknown or ambiguous raises."""
+    spec = spec.strip()
+    match = [i for i in items if i["id"] == spec]
+    if not match:
+        match = [i for i in items if spec and (i["name"] or "").casefold() == spec.casefold()]
+    if not match:
+        raise ValueError(f"Unknown {kind} {spec!r}. {hint}")
+    if len(match) > 1:
+        ids = ", ".join(str(i["id"]) for i in match)
+        raise ValueError(f"{kind.capitalize()} {spec!r} is ambiguous (ids {ids}); use its id. {hint}")
+    return match[0]
+
+
+async def resolve_category(c: MonarchClient, spec: str) -> dict[str, Any]:
+    """A category by id or exact case-insensitive name. Disabled categories are refused."""
+    cat = _pick("category", (await categories(c))["categories"], spec, "See `monarch categories`.")
+    if cat["disabled"]:
+        raise ValueError(f"Category {cat['name']!r} is disabled; pick another.")
+    return cat
+
+
+def _txn_id(txn_id: str) -> str:
+    txn_id = str(txn_id).strip()
+    if not TXN_ID_RE.match(txn_id):
+        raise ValueError(f"Invalid transaction id {txn_id!r}: expected digits (see `monarch tx --json`).")
+    return txn_id
+
+
+def _ref(obj: dict[str, Any] | None) -> dict[str, Any] | None:
+    return {"id": obj.get("id"), "name": obj.get("name")} if obj else None
+
+
+async def _transaction(c: MonarchClient, txn_id: str) -> dict[str, Any]:
+    t = (await c.transaction(txn_id)).get("getTransaction")
+    if not t:
+        raise ValueError(f"Transaction {txn_id} not found.")
+    return {
+        "id": t.get("id"),
+        "date": t.get("date"),
+        "amount": t.get("amount"),
+        "merchant": (t.get("merchant") or {}).get("name"),
+        "category": _ref(t.get("category")),
+        "tags": [_ref(g) for g in t.get("tags") or []],
+    }
+
+
+def _summary(t: dict[str, Any]) -> dict[str, Any]:
+    return {k: t[k] for k in ("id", "date", "amount", "merchant")}
+
+
+async def set_transaction_category(c: MonarchClient, txn_id: str, category: str,
+                                   apply: bool = False) -> dict[str, Any]:
+    """Set one transaction's category. Without apply, returns a preview and changes nothing."""
+    txn_id = _txn_id(txn_id)
+    before = await _transaction(c, txn_id)
+    cat = await resolve_category(c, category)
+    target = {"id": cat["id"], "name": cat["name"]}
+    out = {"transaction": _summary(before), "before": {"category": before["category"]},
+           "after": {"category": target}, "changed": False, "applied": False}
+    if (before["category"] or {}).get("id") == cat["id"]:
+        out["message"] = f"Already in {cat['name']!r}; nothing to change."
+        return out
+    out["changed"] = True
+    if not apply:
+        out["message"] = "Preview only; nothing was changed."
+        return out
+    data = await c.set_transaction_category(txn_id, cat["id"])
+    saved = ((data.get("updateTransaction") or {}).get("transaction") or {}).get("category")
+    out["after"]["category"] = _ref(saved) or target
+    out["applied"] = True
+    out["message"] = "Category updated."
+    return out
+
+
+async def update_transaction_tags(c: MonarchClient, txn_id: str, add: list[str] | None = None,
+                                  remove: list[str] | None = None, apply: bool = False) -> dict[str, Any]:
+    """Add and/or remove tags on one transaction. Monarch replaces the whole tag list, so this
+    reads the current tags and sends the merged list. Without apply, returns a preview."""
+    add, remove = list(add or []), list(remove or [])
+    if not add and not remove:
+        raise ValueError("Give at least one tag to add or remove.")
+    txn_id = _txn_id(txn_id)
+    before = await _transaction(c, txn_id)
+    tags = [{"id": t.get("id"), "name": t.get("name") or ""}
+            for t in (await c.tags()).get("householdTransactionTags") or []]
+    hint = "Valid: " + ", ".join(sorted(repr(t["name"]) for t in tags)) + "."
+    adding = {t["id"]: t for t in (_pick("tag", tags, n, hint) for n in add)}
+    removing = {t["id"]: t for t in (_pick("tag", tags, n, hint) for n in remove)}
+    both = adding.keys() & removing.keys()
+    if both:
+        raise ValueError(f"Can't add and remove the same tag: {', '.join(repr(adding[i]['name']) for i in both)}.")
+    current = [t for t in before["tags"] if t]
+    current_ids = {t["id"] for t in current}
+    merged = [t for t in current if t["id"] not in removing]
+    merged += [{"id": t["id"], "name": t["name"]} for i, t in adding.items() if i not in current_ids]
+    merged_ids = {t["id"] for t in merged}
+    out = {"transaction": _summary(before), "before": {"tags": current}, "after": {"tags": merged},
+           "added": [t for t in merged if t["id"] not in current_ids],
+           "removed": [t for t in current if t["id"] not in merged_ids],
+           "changed": False, "applied": False}
+    if merged_ids == current_ids:
+        out["message"] = "Tags already match; nothing to change."
+        return out
+    out["changed"] = True
+    if not apply:
+        out["message"] = "Preview only; nothing was changed."
+        return out
+    data = await c.set_transaction_tags(txn_id, [t["id"] for t in merged])
+    saved = ((data.get("setTransactionTags") or {}).get("transaction") or {}).get("tags")
+    if saved is not None:
+        out["after"]["tags"] = [_ref(g) for g in saved]
+    out["applied"] = True
+    out["message"] = "Tags updated."
+    return out
