@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.3 (2026-10-02)
 
 - Writes behind a mutation allowlist (`client.ALLOWED_MUTATIONS`); anything not listed is refused before any request.
 - `monarch tx set-category TXN_ID --category NAME|ID` and `monarch tx tag TXN_ID --add/--remove NAME`:
