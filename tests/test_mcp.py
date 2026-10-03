@@ -167,7 +167,7 @@ class McpWrites(unittest.TestCase):
         return r.structured_content, asked
 
     def test_preview_never_asks(self):
-        accept = types.ElicitResult(action="accept", content={"choice": "Apply this change"})
+        accept = types.ElicitResult(action="accept", content={})
         with MockMonarch() as m, mock.patch.object(keychain, "load", return_value=TOKEN):
             d, asked = self.client_call("monarch_set_transaction_category",
                                         {"transaction_id": "301", "category": "Restaurants"}, accept)
@@ -180,7 +180,7 @@ class McpWrites(unittest.TestCase):
             self.assertEqual(m.mutations(), [])
 
     def test_accept_applies_once(self):
-        accept = types.ElicitResult(action="accept", content={"choice": "Apply this change"})
+        accept = types.ElicitResult(action="accept", content={})
         for mode in ("auto", "legacy"):  # 2026-07-28 input-required rounds, and mid-call elicitation
             with MockMonarch() as m, mock.patch.object(keychain, "load", return_value=TOKEN):
                 d, asked = self.client_call("monarch_set_transaction_category",
@@ -201,7 +201,7 @@ class McpWrites(unittest.TestCase):
 
     def test_decline_cancel_or_unticked_do_not_apply(self):
         for answer in (types.ElicitResult(action="decline"), types.ElicitResult(action="cancel"),
-                       types.ElicitResult(action="accept", content={"choice": "Cancel"})):
+                       types.ElicitResult(action="decline")):
             with MockMonarch() as m, mock.patch.object(keychain, "load", return_value=TOKEN):
                 d, asked = self.client_call("monarch_update_transaction_tags",
                                             {"transaction_id": "301", "remove": ["Business"], "apply": True},
