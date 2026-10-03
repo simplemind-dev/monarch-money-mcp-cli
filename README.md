@@ -51,9 +51,8 @@ monarch tx tag TXN_ID [--add NAME]... [--remove NAME]... [--yes]
 - **Business entities:** add `--entity <id|name|household>` to limit results to an entity. You can repeat it.
   It works on `accounts`, `tx`, `cashflow`, `spending`, and `income`.
 - **Output:** `--output table|csv|json` (`--json` for short).
-- **Changing a transaction:** `tx set-category` and `tx tag` show the change, then ask `Apply this change? [y/N]`.
-  `--yes` applies without asking; without a terminal they only preview. Find the id with `monarch tx --json`.
-  `tx tag` keeps the transaction's other tags.
+- **Changing a transaction:** `tx set-category` and `tx tag` show the change and ask `[y/N]` before applying.
+  `--yes` skips the question; without a terminal they only preview. Find the id with `monarch tx --json`.
 
 ```bash
 monarch spending --last-month
@@ -78,8 +77,8 @@ The read-only tools: `monarch_list_entities`, `monarch_list_accounts`, `monarch_
 `monarch_list_holdings`, `monarch_net_worth_history`, and `monarch_list_categories`.
 
 **Writes (opt-in):** start the server with `--allow-writes` to add `monarch_set_transaction_category` and
-`monarch_update_transaction_tags`. They preview by default. With `apply=true` the client asks you to confirm,
-and nothing changes unless you accept. A client that can't show confirmations can't apply changes.
+`monarch_update_transaction_tags`. They preview first, then ask you to Accept or Decline. Nothing changes unless you accept, and a client that
+can't show the prompt can't apply changes.
 
 ```bash
 claude mcp add monarch -s user -- "$(which monarch)" mcp --allow-writes
@@ -97,7 +96,7 @@ Run `monarch doctor`. Every row that isn't `ok` explains the problem, and most i
 ## Security
 
 Your password is never stored. The tool only talks to `api.monarch.com`. It changes data only through the
-mutation allowlist in [SECURITY.md](SECURITY.md), and only when you pass `--yes` or enable MCP writes.
+mutation allowlist in [SECURITY.md](SECURITY.md), and only after you confirm.
 
 ## Development
 
