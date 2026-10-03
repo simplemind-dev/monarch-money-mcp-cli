@@ -29,24 +29,7 @@ after `mcp`.
 
 ## Command line
 
-```
-$ monarch --help
-  auth                log in, check status, or log out
-  accounts            account commands
-  entities            list business entities
-  transactions (tx)   list transactions, or change one (set-category, tag)
-  categories          list categories
-  cashflow            income, expenses, savings rate, and totals by category
-  spending            expense totals by category, largest first
-  income              income totals by category, largest first
-  budgets             budgeted vs actual per category, by month
-  goals               savings goals: planned vs contributed
-  recurring           recurring bills and income due
-  holdings            investment holdings with value and gain
-  networth            net worth over time
-  doctor              check login, API access, the MCP server, and PATH
-  mcp                 run the MCP server over stdio
-```
+Run `monarch --help` to see all commands, and `monarch <command> --help` for a command's options.
 
 ```bash
 monarch spending --last-month
@@ -54,8 +37,6 @@ monarch cashflow --ytd --entity "Acme LLC"
 monarch tx --from 2026-01-01 --output csv > transactions.csv
 monarch tx set-category 123456789 --category Subsidy
 ```
-
-Run `monarch <command> --help` for all options.
 
 ## Troubleshooting
 
